@@ -18,6 +18,8 @@ var (
 	ErrPassphraseMissing = errors.New("this action is encrypted and this machine has no passphrase for it")
 	// ErrDecrypt: wrong passphrase or damaged data. Never retried automatically.
 	ErrDecrypt = errors.New("cannot decrypt: wrong passphrase or damaged data")
+	// ErrKeyCheckMissing: an encrypted action has files but no .meta/keycheck.
+	ErrKeyCheckMissing = errors.New("keycheck missing but the action already has files: cannot verify the passphrase; repair by restoring .meta/keycheck")
 	// ErrConflictPending: the action is paused until its conflicts are resolved.
 	ErrConflictPending = errors.New("the action has unresolved conflicts")
 )

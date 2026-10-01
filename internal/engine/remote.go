@@ -42,7 +42,9 @@ func loadManifest(ctx context.Context, s storage.Storage, l Layout) (model.Manif
 }
 
 // rebuildManifest lists current/ and reads each object's metadata. Objects
-// without our sha256 metadata were not written by s3-anysync and are skipped.
+// without our sha256 metadata were not written by s3-anysync and are skipped,
+// so files placed under current/ by other tools are ignored by sync (they are
+// neither downloaded nor deleted).
 func rebuildManifest(ctx context.Context, s storage.Storage, l Layout) (model.Manifest, error) {
 	m := model.Manifest{Files: map[string]model.FileEntry{}}
 	prefix := l.CurrentPrefix()
