@@ -14,6 +14,8 @@ func TestMatcher(t *testing.T) {
 		"cache":                 true,
 		"x/cache":               true,
 		"root.txt":              true,
+		"sub/root.txt":          false,
+		"a/b/root.txt":          false,
 		"build":                 true,
 		"sub/x.tmp":             true,
 		"other/sub/x.tmp":       false,
@@ -31,6 +33,23 @@ func TestMatcher(t *testing.T) {
 	}
 	if m.MatchPath("keep/x.json") {
 		t.Error("MatchPath matched a kept file")
+	}
+}
+
+func TestAnchoredPattern(t *testing.T) {
+	m, err := NewMatcher([]string{"/*.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]bool{
+		"x.json":     true,
+		"d/x.json":   false,
+		"a/b/x.json": false,
+	}
+	for rel, want := range cases {
+		if got := m.Match(rel); got != want {
+			t.Errorf("Match(%q) = %v, want %v", rel, got, want)
+		}
 	}
 }
 
