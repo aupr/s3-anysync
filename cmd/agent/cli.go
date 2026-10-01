@@ -95,11 +95,11 @@ func reportError(w io.Writer, err error) {
 func explain(err error) string {
 	switch {
 	case errors.Is(err, engine.ErrKeyCheckMissing):
-		return "  hint: the action's passphrase check file (.meta/keycheck) is missing from the cloud, so the passphrase cannot be verified; restore .meta/keycheck before syncing."
+		return "  hint: the keycheck file (.meta/keycheck) of this action was lost in the bucket, so the passphrase cannot be verified; restore that object from a backup of the bucket or ask the machine that created the action."
 	case errors.Is(err, engine.ErrDecrypt):
 		return "  hint: the passphrase is wrong or the cloud data is damaged; check S3_ANYSYNC_PASSPHRASE."
 	case errors.Is(err, engine.ErrPassphraseMissing):
-		return "  hint: this action is encrypted; set S3_ANYSYNC_PASSPHRASE to its passphrase and run `action join` again."
+		return "  hint: this action is encrypted; set S3_ANYSYNC_PASSPHRASE and re-run the same command (action create / action join / sync)."
 	case errors.Is(err, storage.ErrLocked):
 		return "  hint: another machine is syncing this action; try again in a minute."
 	case errors.Is(err, storage.ErrLockLost):
@@ -158,6 +158,9 @@ func (c *cli) profile(ctx context.Context, args []string) error {
 		fs.BoolVar(&p.PathStyle, "path-style", false, "path-style addressing")
 		if _, err := parseArgs(fs, args[1:]); err != nil {
 			return err
+		}
+		if p.AccessKeyID == "" {
+			return errors.New("profile add: --access-key is required")
 		}
 		secret := os.Getenv("S3_ANYSYNC_SECRET")
 		if secret == "" {
@@ -327,6 +330,9 @@ func (c *cli) item(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		if *typ != string(model.ItemFile) && *typ != string(model.ItemDir) {
+			return errors.New("item add: --type must be file or dir")
+		}
 		it.Type = model.ItemType(*typ)
 		it.Excludes = excludes
 		added, err := c.app.AddItem(ctx, pos[0], it, *local)
@@ -432,6 +438,9 @@ func (c *cli) restore(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if t := engine.RestoreTarget(*to); t != engine.RestoreLocal && t != engine.RestoreCloud && t != engine.RestoreBoth {
+		return fmt.Errorf("restore: --to must be local, cloud or both (got %q)", *to)
+	}
 	res, err := r.Restore(ctx, pos[1], only, engine.RestoreTarget(*to))
 	if err != nil {
 		return err
@@ -488,7 +497,7 @@ func (c *cli) resolve(ctx context.Context, args []string) error {
 		}
 	}
 	for _, kv := range each {
-		p, side, ok := strings.Cut(kv, "=")
+		p, side, ok := cutLast(kv)
 		if !ok {
 			return fmt.Errorf("--path %q: expected PATH=local or PATH=cloud", kv)
 		}
@@ -520,4 +529,13 @@ func nameOr(names map[string]string, id string) string {
 		return n
 	}
 	return id
+}
+
+// cutLast splits s at the last '=' so paths may contain '='.
+func cutLast(s string) (before, after string, ok bool) {
+	i := strings.LastIndex(s, "=")
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+1:], true
 }

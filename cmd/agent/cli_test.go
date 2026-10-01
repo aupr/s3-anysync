@@ -95,7 +95,9 @@ func TestCLIEndToEnd(t *testing.T) {
 	// Conflict, list it, resolve it.
 	os.WriteFile(filepath.Join(dirA, "settings.json"), []byte(`{"a":"A"}`), 0o644)
 	os.WriteFile(filepath.Join(dirB, "settings.json"), []byte(`{"a":"BB"}`), 0o644)
-	runOK(t, a, "sync", act)
+	if out := runOK(t, a, "sync", act); !strings.Contains(out, "uploaded 1,") {
+		t.Fatalf("sync A before conflict:\n%s", out)
+	}
 	if out := runOK(t, b, "sync", act); !strings.Contains(out, "conflict: settings.json") {
 		t.Fatalf("conflict not reported:\n%s", out)
 	}
@@ -109,6 +111,17 @@ func TestCLIEndToEnd(t *testing.T) {
 	runOK(t, b, "action", "direction", act, "cloud-to-local")
 	if out := runOK(t, b, "action", "list"); !strings.Contains(out, "cloud-to-local") {
 		t.Fatalf("action list:\n%s", out)
+	}
+	// A cloud-to-local machine never uploads its own edits.
+	os.WriteFile(filepath.Join(dirB, "settings.json"), []byte(`{"a":"B-local-edit"}`), 0o644)
+	if out := runOK(t, b, "sync", act); !strings.Contains(out, "uploaded 0,") {
+		t.Fatalf("cloud-to-local B uploaded:\n%s", out)
+	}
+	if out := runOK(t, a, "sync", act); !strings.Contains(out, "downloaded 0,") {
+		t.Fatalf("A should see nothing new:\n%s", out)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dirA, "settings.json")); string(data) != `{"a":"A"}` {
+		t.Fatalf("cloud copy changed, A = %q", data)
 	}
 }
 
@@ -127,7 +140,7 @@ func TestCLIUsageAndErrors(t *testing.T) {
 	}
 	errb.Reset()
 	t.Setenv("S3_ANYSYNC_SECRET", "")
-	if code := run([]string{"profile", "add", "--name", "x", "--bucket", "b"}, &out, &errb, open); code != 1 || !strings.Contains(errb.String(), "S3_ANYSYNC_SECRET") {
+	if code := run([]string{"profile", "add", "--name", "x", "--bucket", "b", "--access-key", "k"}, &out, &errb, open); code != 1 || !strings.Contains(errb.String(), "S3_ANYSYNC_SECRET") {
 		t.Fatalf("missing secret: exit %d, %s", code, errb.String())
 	}
 }
@@ -137,9 +150,9 @@ func TestExplain(t *testing.T) {
 		err  error
 		want string
 	}{
-		{engine.ErrKeyCheckMissing, "keycheck"},
+		{engine.ErrKeyCheckMissing, "backup of the bucket"},
 		{engine.ErrDecrypt, "passphrase"},
-		{engine.ErrPassphraseMissing, "S3_ANYSYNC_PASSPHRASE"},
+		{engine.ErrPassphraseMissing, "re-run the same command"},
 		{storage.ErrLocked, "another machine is syncing this action; try again in a minute"},
 		{storage.ErrLockLost, "lock"},
 	}
@@ -228,7 +241,7 @@ func TestCLIConflictResolveStrictAndDeferred(t *testing.T) {
 	}
 }
 
-func TestPrintResultDeferredAndRestoreNote(t *testing.T) {
+func TestPrintResultDeferredAndConflictHint(t *testing.T) {
 	var out bytes.Buffer
 	c := &cli{out: &out}
 	c.printResult(model.SyncResult{Outcome: model.OutcomeOK, Deferred: []string{"d/x.txt"}})
@@ -239,5 +252,167 @@ func TestPrintResultDeferredAndRestoreNote(t *testing.T) {
 	c.printConflictHint([]model.Conflict{{Path: "d/x.txt"}})
 	if !strings.Contains(out.String(), "conflict: d/x.txt") || !strings.Contains(out.String(), "review") {
 		t.Fatalf("hint:\n%s", out.String())
+	}
+}
+
+func readFile(t *testing.T, p string) string {
+	t.Helper()
+	d, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(d)
+}
+
+func runFail(t *testing.T, open func() (*app.App, error), args ...string) string {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := run(args, &out, &errb, open); code != 1 {
+		t.Fatalf("%v: exit %d, want 1 (%s)", args, code, errb.String())
+	}
+	return errb.String()
+}
+
+func TestCLIRestore(t *testing.T) {
+	t.Setenv("S3_ANYSYNC_SECRET", "secret")
+	open := opener(t, storage.NewMemory())
+	p := valueAfter(t, runOK(t, open, "profile", "add", "--name", "t", "--bucket", "b", "--access-key", "k"), "profile created")
+	act := valueAfter(t, runOK(t, open, "action", "create", "--profile", p, "--name", "A"), "action created")
+	dir := t.TempDir()
+	one, two := filepath.Join(dir, "one.txt"), filepath.Join(dir, "two.txt")
+	os.WriteFile(one, []byte("one-v1"), 0o644)
+	os.WriteFile(two, []byte("two-v1"), 0o644)
+	runOK(t, open, "item", "add", "--remote-name", "d", "--type", "dir", "--path", dir, act)
+	runOK(t, open, "sync", act)
+	ts := strings.Fields(valueAfter(t, runOK(t, open, "snapshot", act), "snapshot taken"))[0]
+	os.WriteFile(one, []byte("one-v2"), 0o644)
+	os.WriteFile(two, []byte("two-v2"), 0o644)
+	if out := runOK(t, open, "sync", act); !strings.Contains(out, "uploaded 2,") {
+		t.Fatalf("sync v2:\n%s", out)
+	}
+
+	// Flags must come before ACTION_ID TS.
+	if msg := runFail(t, open, "restore", act, ts, "--to", "cloud"); !strings.Contains(msg, "expected ACTION_ID TS") {
+		t.Fatalf("flags after arguments: %s", msg)
+	}
+	if msg := runFail(t, open, "restore", "--to", "bogus", act, ts); !strings.Contains(msg, "--to must be local, cloud or both") {
+		t.Fatalf("bad --to: %s", msg)
+	}
+	if msg := runFail(t, open, "restore", act, ts); !strings.Contains(msg, "--to must be") {
+		t.Fatalf("missing --to: %s", msg)
+	}
+
+	// --to cloud with a repeated --path restores both files in the cloud only.
+	out := runOK(t, open, "restore", "--to", "cloud", "--path", "d/one.txt", "--path", "d/two.txt", act, ts)
+	if !strings.Contains(out, "restored 2 file(s)") || strings.Contains(out, "note:") {
+		t.Fatalf("restore cloud:\n%s", out)
+	}
+	if got := readFile(t, one); got != "one-v2" {
+		t.Fatalf("--to cloud touched local: %q", got)
+	}
+	if out := runOK(t, open, "sync", act); !strings.Contains(out, "downloaded 2,") {
+		t.Fatalf("sync should pull the restored cloud:\n%s", out)
+	}
+	if got := readFile(t, one) + readFile(t, two); got != "one-v1two-v1" {
+		t.Fatalf("after cloud restore: %q", got)
+	}
+
+	// --to local with one --path: restores that file only, prints the note.
+	os.WriteFile(one, []byte("one-v3"), 0o644)
+	os.WriteFile(two, []byte("two-v3"), 0o644)
+	out = runOK(t, open, "restore", "--to", "local", "--path", "d/one.txt", act, ts)
+	if !strings.Contains(out, "restored 1 file(s)") || !strings.Contains(out, "note: restored locally only; a two-way machine will upload") {
+		t.Fatalf("restore local:\n%s", out)
+	}
+	if got := readFile(t, one); got != "one-v1" {
+		t.Fatalf("one.txt = %q", got)
+	}
+	if got := readFile(t, two); got != "two-v3" {
+		t.Fatalf("two.txt must be untouched: %q", got)
+	}
+
+	// --to both restores everything on both sides, no note.
+	out = runOK(t, open, "restore", "--to", "both", act, ts)
+	if !strings.Contains(out, "restored 2 file(s)") || strings.Contains(out, "note:") {
+		t.Fatalf("restore both:\n%s", out)
+	}
+	if got := readFile(t, two); got != "two-v1" {
+		t.Fatalf("two.txt = %q", got)
+	}
+}
+
+func TestCLIResolveStaleChoiceReprintsConflicts(t *testing.T) {
+	t.Setenv("S3_ANYSYNC_SECRET", "secret")
+	store := storage.NewMemory()
+	a, b := opener(t, store), opener(t, store)
+	pa := valueAfter(t, runOK(t, a, "profile", "add", "--name", "t", "--bucket", "b", "--access-key", "k"), "profile created")
+	act := valueAfter(t, runOK(t, a, "action", "create", "--profile", pa, "--name", "A"), "action created")
+	dirA, dirB := t.TempDir(), t.TempDir()
+	fa, fb := filepath.Join(dirA, "s.json"), filepath.Join(dirB, "s.json")
+	os.WriteFile(fa, []byte("v0"), 0o644)
+	item := valueAfter(t, runOK(t, a, "item", "add", "--remote-name", "s.json", "--type", "file", "--path", fa, act), "item added")
+	runOK(t, a, "sync", act)
+	pb := valueAfter(t, runOK(t, b, "profile", "add", "--name", "t", "--bucket", "b", "--access-key", "k"), "profile created")
+	runOK(t, b, "action", "join", "--profile", pb, act)
+	runOK(t, b, "item", "map", "--path", fb, act, item)
+	runOK(t, b, "sync", act)
+	os.WriteFile(fa, []byte("A1"), 0o644)
+	os.WriteFile(fb, []byte("B1-local"), 0o644)
+	runOK(t, a, "sync", act)
+	if out := runOK(t, b, "sync", act); !strings.Contains(out, "conflict: s.json") {
+		t.Fatalf("no conflict:\n%s", out)
+	}
+	runOK(t, b, "conflicts", act)
+	// Another machine changes the cloud after the conflicts were reviewed.
+	os.WriteFile(fa, []byte("A2-newer"), 0o644)
+	runOK(t, a, "sync", act)
+
+	out := runOK(t, b, "resolve", "--all", "local", act)
+	if !strings.Contains(out, "conflict: s.json") || !strings.Contains(out, "To continue: review the conflicts (conflicts ACTION_ID)") {
+		t.Fatalf("stale resolve should print conflicts and the review hint:\n%s", out)
+	}
+	if got := readFile(t, fb); got != "B1-local" {
+		t.Fatalf("stale resolve must not write: %q", got)
+	}
+}
+
+func TestCLIResolvePathSplitsAtLastEquals(t *testing.T) {
+	t.Setenv("S3_ANYSYNC_SECRET", "secret")
+	store := storage.NewMemory()
+	a, b := opener(t, store), opener(t, store)
+	pa := valueAfter(t, runOK(t, a, "profile", "add", "--name", "t", "--bucket", "b", "--access-key", "k"), "profile created")
+	act := valueAfter(t, runOK(t, a, "action", "create", "--profile", pa, "--name", "A"), "action created")
+	dirA, dirB := t.TempDir(), t.TempDir()
+	fa, fb := filepath.Join(dirA, "a=b.json"), filepath.Join(dirB, "a=b.json")
+	os.WriteFile(fa, []byte("v0"), 0o644)
+	item := valueAfter(t, runOK(t, a, "item", "add", "--remote-name", "a=b.json", "--type", "file", "--path", fa, act), "item added")
+	runOK(t, a, "sync", act)
+	pb := valueAfter(t, runOK(t, b, "profile", "add", "--name", "t", "--bucket", "b", "--access-key", "k"), "profile created")
+	runOK(t, b, "action", "join", "--profile", pb, act)
+	runOK(t, b, "item", "map", "--path", fb, act, item)
+	runOK(t, b, "sync", act)
+	os.WriteFile(fa, []byte("A1"), 0o644)
+	os.WriteFile(fb, []byte("B1-local"), 0o644)
+	runOK(t, a, "sync", act)
+	runOK(t, b, "sync", act)
+	runOK(t, b, "resolve", "--path", "a=b.json=cloud", act)
+	if got := readFile(t, fb); got != "A1" {
+		t.Fatalf("a=b.json = %q", got)
+	}
+}
+
+func TestCLIEarlyValidation(t *testing.T) {
+	t.Setenv("S3_ANYSYNC_SECRET", "secret")
+	open := opener(t, storage.NewMemory())
+	if msg := runFail(t, open, "profile", "add", "--name", "x", "--bucket", "b"); !strings.Contains(msg, "--access-key is required") {
+		t.Fatalf("empty access key: %s", msg)
+	}
+	p := valueAfter(t, runOK(t, open, "profile", "add", "--name", "t", "--bucket", "b", "--access-key", "k"), "profile created")
+	act := valueAfter(t, runOK(t, open, "action", "create", "--profile", p, "--name", "A"), "action created")
+	for _, typ := range []string{"", "folder"} {
+		msg := runFail(t, open, "item", "add", "--remote-name", "x", "--type", typ, "--path", t.TempDir(), act)
+		if !strings.Contains(msg, "--type must be file or dir") {
+			t.Fatalf("type %q: %s", typ, msg)
+		}
 	}
 }
