@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/niceit/s3-anysync/internal/engine"
@@ -59,7 +61,9 @@ func TestTwoMachinesThroughApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	dirA := t.TempDir()
-	os.WriteFile(filepath.Join(dirA, "settings.json"), []byte(`{"a":1}`), 0o644)
+	if err := os.WriteFile(filepath.Join(dirA, "settings.json"), []byte(`{"a":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	it, err := a.AddItem(ctx, act.ID, model.Item{RemoteName: "/settings.json", Type: model.ItemFile}, filepath.Join(dirA, "settings.json"))
 	if err != nil || it.RemoteName != "settings.json" {
 		t.Fatalf("AddItem = %+v, %v", it, err)
@@ -110,8 +114,8 @@ func TestTwoMachinesThroughApp(t *testing.T) {
 	if err := b.MapItem(ctx, act.ID, it.ID, filepath.Join(dirB2, "settings.json")); err != nil {
 		t.Fatal(err)
 	}
-	if base, _ := b.DB.LoadBaseline(act.ID); len(base) != 0 {
-		t.Fatalf("baseline not dropped after re-mapping: %+v", base)
+	if base, err := b.DB.LoadBaseline(act.ID); err != nil || len(base) != 0 {
+		t.Fatalf("baseline not dropped after re-mapping: %+v, %v", base, err)
 	}
 	if res, err := rb.Sync(ctx); err != nil || res.DeletedRemote != 0 || res.Downloaded != 1 {
 		t.Fatalf("B sync after re-map = %+v, %v", res, err)
@@ -147,7 +151,9 @@ func TestJoinMissingKeyCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := a.AddItem(ctx, act.ID, model.Item{RemoteName: "f.txt", Type: model.ItemFile}, filepath.Join(dir, "f.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -183,5 +189,130 @@ func TestLockMode(t *testing.T) {
 	d, err := a.deps(p, "x", false)
 	if err != nil || d.LockMode != storage.LockBestEffort {
 		t.Fatalf("deps lock mode = %v, %v", d.LockMode, err)
+	}
+}
+
+// failingSecrets fails Set for action passphrase keys.
+type failingSecrets struct{ *secrets.Memory }
+
+func (f failingSecrets) Set(key, value string) error {
+	if strings.HasSuffix(key, ":passphrase") {
+		return errors.New("keychain unavailable")
+	}
+	return f.Memory.Set(key, value)
+}
+
+func TestMapItemDropsBaselineBeforePublishing(t *testing.T) {
+	store := storage.NewMemory()
+	a, b := newTestApp(t, store), newTestApp(t, store)
+	p, err := a.AddProfile(model.Profile{Name: "t", Bucket: "bkt", RootPrefix: "cfg", AccessKeyID: "k"}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	act, err := a.CreateAction(ctx, p.ID, model.Action{Name: "A", PropagateDeletes: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirA := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dirA, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err := a.AddItem(ctx, act.ID, model.Item{RemoteName: "f.txt", Type: model.ItemFile}, filepath.Join(dirA, "f.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, _ := a.Runner(act.ID)
+	if _, err := ra.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pb, _ := b.AddProfile(model.Profile{Name: "t", Bucket: "bkt", RootPrefix: "cfg", AccessKeyID: "k"}, "s")
+	if _, err := b.Join(ctx, pb.ID, act.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	dirB := t.TempDir()
+	if err := b.MapItem(ctx, act.ID, it.ID, filepath.Join(dirB, "f.txt")); err != nil {
+		t.Fatal(err)
+	}
+	rb, _ := b.Runner(act.ID)
+	if res, err := rb.Sync(ctx); err != nil || res.Downloaded != 1 {
+		t.Fatalf("B sync = %+v, %v", res, err)
+	}
+	if base, err := b.DB.LoadBaseline(act.ID); err != nil || len(base) == 0 {
+		t.Fatalf("expected a baseline: %+v, %v", base, err)
+	}
+
+	b.putAction = func(model.Action) error { return errors.New("disk full") }
+	if err := b.MapItem(ctx, act.ID, it.ID, filepath.Join(t.TempDir(), "f.txt")); err == nil {
+		t.Fatal("expected MapItem to fail")
+	}
+	base, err := b.DB.LoadBaseline(act.ID)
+	if err != nil || len(base) != 0 {
+		t.Fatalf("baseline must already be empty after a failed MapItem: %+v, %v", base, err)
+	}
+	// The local copy still points at dirB; an emptied folder must download, not delete.
+	if err := os.Remove(filepath.Join(dirB, "f.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := rb.Sync(ctx); err != nil || res.DeletedRemote != 0 || res.Downloaded != 1 {
+		t.Fatalf("sync after failed MapItem = %+v, %v", res, err)
+	}
+}
+
+func TestCreateActionStoresPassphraseBeforePublishing(t *testing.T) {
+	store := storage.NewMemory()
+	a := newTestApp(t, store)
+	a.Secrets = failingSecrets{secrets.NewMemory()}
+	p, err := a.AddProfile(model.Profile{Name: "t", Bucket: "bkt", RootPrefix: "cfg", AccessKeyID: "k"}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CreateAction(ctx, p.ID, model.Action{Name: "E", Encrypt: true}, "pw"); err == nil {
+		t.Fatal("expected CreateAction to fail")
+	}
+	objs, err := store.List(ctx, "")
+	if err != nil || len(objs) != 0 {
+		t.Fatalf("nothing may be published: %+v, %v", objs, err)
+	}
+	if acts, _ := a.DB.ListActions(); len(acts) != 0 {
+		t.Fatalf("action stored locally: %+v", acts)
+	}
+}
+
+func TestAddProfileIgnoresConditionalWrites(t *testing.T) {
+	a := newTestApp(t, storage.NewMemory())
+	p, err := a.AddProfile(model.Profile{Name: "t", Bucket: "b", AccessKeyID: "k", ConditionalWrites: true}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved, _ := a.DB.GetProfile(p.ID); p.ConditionalWrites || saved.ConditionalWrites {
+		t.Fatal("caller-supplied ConditionalWrites must be ignored")
+	}
+}
+
+func TestDefaultDataDir(t *testing.T) {
+	t.Setenv("S3_ANYSYNC_DATA_DIR", "/custom/dir")
+	if d, err := DefaultDataDir(); err != nil || d != "/custom/dir" {
+		t.Fatalf("override = %q, %v", d, err)
+	}
+	t.Setenv("S3_ANYSYNC_DATA_DIR", "")
+	d, err := DefaultDataDir()
+	if err != nil || filepath.Base(d) != "s3-anysync" {
+		t.Fatalf("default = %q, %v", d, err)
+	}
+}
+
+func TestOpenCreatesPrivateDataDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "data")
+	a, err := Open(dir, secrets.NewMemory(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("data dir missing: %v", err)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o700 {
+		t.Fatalf("data dir mode = %v, want 0700", fi.Mode().Perm())
 	}
 }

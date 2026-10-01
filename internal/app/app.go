@@ -34,6 +34,16 @@ type App struct {
 	// LockSettle is the best-effort lock read-back delay.
 	LockSettle time.Duration
 	Log        *slog.Logger
+
+	// putAction stores an action locally; a test seam, defaults to DB.PutAction.
+	putAction func(model.Action) error
+}
+
+func (a *App) savePutAction(act model.Action) error {
+	if a.putAction != nil {
+		return a.putAction(act)
+	}
+	return a.DB.PutAction(act)
 }
 
 // DefaultDataDir is S3_ANYSYNC_DATA_DIR if set, otherwise
@@ -70,6 +80,7 @@ func Open(dataDir string, sec secrets.Store, log *slog.Logger) (*App, error) {
 	return &App{
 		DB: db, Secrets: sec, DataDir: dataDir, MachineID: id, MachineName: name,
 		NewStorage: NewS3Storage, LockSettle: time.Second, Log: log,
+		putAction: db.PutAction,
 	}, nil
 }
 
@@ -141,10 +152,16 @@ func (a *App) AddProfile(p model.Profile, secret string) (model.Profile, error) 
 		p.ID = uuid.NewString()
 	}
 	p.RootPrefix = strings.Trim(strings.ReplaceAll(strings.TrimSpace(p.RootPrefix), `\`, "/"), "/")
+	// Conditional-write support is only known after TestProfile probes the provider.
+	p.ConditionalWrites = false
 	if err := a.Secrets.Set(secrets.ProfileSecretKey(p.ID), secret); err != nil {
 		return p, fmt.Errorf("store secret key: %w", err)
 	}
-	return p, a.DB.PutProfile(p)
+	if err := a.DB.PutProfile(p); err != nil {
+		_ = a.Secrets.Delete(secrets.ProfileSecretKey(p.ID)) // best effort
+		return p, err
+	}
+	return p, nil
 }
 
 // TestProfile probes the bucket and records whether conditional writes work.
@@ -184,15 +201,20 @@ func (a *App) CreateAction(ctx context.Context, profileID string, act model.Acti
 		return act, err
 	}
 	d.Passphrase = passphrase
-	if err := engine.CreateSharedAction(ctx, d, p.RootPrefix, act); err != nil {
-		return act, err
-	}
+	// Keep the passphrase before publishing, so a bucket never holds an
+	// encrypted action this machine cannot open.
 	if act.Encrypt {
 		if err := a.Secrets.Set(secrets.ActionPassphraseKey(act.ID), passphrase); err != nil {
 			return act, fmt.Errorf("store passphrase: %w", err)
 		}
 	}
-	return act, a.DB.PutAction(act)
+	if err := engine.CreateSharedAction(ctx, d, p.RootPrefix, act); err != nil {
+		if act.Encrypt {
+			_ = a.Secrets.Delete(secrets.ActionPassphraseKey(act.ID)) // best effort
+		}
+		return act, err
+	}
+	return act, a.savePutAction(act)
 }
 
 // updateShared changes the bucket's copy of an action and stores the result locally.
@@ -217,7 +239,7 @@ func (a *App) updateShared(ctx context.Context, actionID string, mutate func(*mo
 		return act, err
 	}
 	updated.ProfileID = act.ProfileID
-	return updated, a.DB.PutAction(updated)
+	return updated, a.savePutAction(updated)
 }
 
 // AddItem adds a file or directory, mapped to localPath on this machine.
@@ -244,7 +266,21 @@ func (a *App) MapItem(ctx context.Context, actionID, itemID, localPath string) e
 	if _, err := paths.Expand(localPath); err != nil {
 		return err
 	}
+	// Pointing an item at a (new) local path starts it from scratch: its old
+	// baseline would make an empty or different folder look like mass
+	// deletions. Drop it BEFORE publishing, so a failure after the publish
+	// cannot leave a stale baseline behind (an empty baseline is always safe).
 	var remoteName string
+	if cur, err := a.DB.GetAction(actionID); err == nil {
+		for _, it := range cur.Items {
+			if it.ID == itemID {
+				if err := a.dropItemBaseline(actionID, it.RemoteName); err != nil {
+					return err
+				}
+				break
+			}
+		}
+	}
 	_, err := a.updateShared(ctx, actionID, func(act *model.Action) error {
 		for i := range act.Items {
 			if act.Items[i].ID == itemID {
@@ -258,9 +294,7 @@ func (a *App) MapItem(ctx context.Context, actionID, itemID, localPath string) e
 	if err != nil {
 		return err
 	}
-	// Pointing an item at a (new) local path starts it from scratch: its old
-	// baseline would make an empty or different folder look like mass local
-	// deletions. The next sync then treats it like a first run.
+	// Belt and braces: covers an item missing from the local copy.
 	return a.dropItemBaseline(actionID, remoteName)
 }
 
