@@ -289,12 +289,19 @@ type SyncResult struct {
 	DeletedLocal  int        `json:"deletedLocal"`
 	Adopted       int        `json:"adopted"`
 	Conflicts     []Conflict `json:"conflicts"`
+	// Deferred lists paths skipped because the local file changed while the
+	// sync ran; the next run plans them again.
+	Deferred []string `json:"deferred"`
 }
 
 // Summary is a one-line human description of the counts.
 func (r SyncResult) Summary() string {
-	return fmt.Sprintf("uploaded %d, downloaded %d, deleted in cloud %d, deleted locally %d, adopted %d, conflicts %d",
+	s := fmt.Sprintf("uploaded %d, downloaded %d, deleted in cloud %d, deleted locally %d, adopted %d, conflicts %d",
 		r.Uploaded, r.Downloaded, r.DeletedRemote, r.DeletedLocal, r.Adopted, len(r.Conflicts))
+	if len(r.Deferred) > 0 {
+		s += fmt.Sprintf(", deferred %d", len(r.Deferred))
+	}
+	return s
 }
 
 // HistoryEntry is one row of an action's run history.

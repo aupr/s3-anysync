@@ -52,7 +52,7 @@ func TestApplySkipsManifestAndBaselineWhenLockIsLost(t *testing.T) {
 	ops := []Op{{Path: "settings.json", Kind: OpUpload, Local: &entry}, {Path: "zzz-never-uploaded.json", Kind: OpDeleteRemote}}
 	manifest := model.Manifest{Files: map[string]model.FileEntry{}}
 
-	_, err = r.apply(lockCtx, ms, ops, map[string]model.FileEntry{}, &manifest)
+	_, err = r.apply(lockCtx, ms, ops, map[string]model.FileEntry{}, map[string]model.FileEntry{}, &manifest)
 	if !errors.Is(err, storage.ErrLockLost) {
 		t.Fatalf("want ErrLockLost, got %v", err)
 	}
@@ -61,5 +61,19 @@ func TestApplySkipsManifestAndBaselineWhenLockIsLost(t *testing.T) {
 	}
 	if b, _ := d.Repo.LoadBaseline("act"); len(b) != 0 {
 		t.Fatalf("baseline was saved although the lock was lost: %+v", b)
+	}
+}
+
+func TestApplyReportsLockLostCauseBeforeAnyCloudWrite(t *testing.T) {
+	mem := storage.NewMemory()
+	lockCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(storage.ErrLockLost)
+	a := basicAction("act")
+	d := memDeps(mem, "A")
+	d.Repo = newDB(t)
+	r := NewRunner(d, "cfg", a)
+	_, err := r.apply(lockCtx, nil, []Op{{Path: "x", Kind: OpDeleteRemote}}, map[string]model.FileEntry{}, map[string]model.FileEntry{}, &model.Manifest{Files: map[string]model.FileEntry{}})
+	if !errors.Is(err, storage.ErrLockLost) {
+		t.Fatalf("want ErrLockLost, got %v", err)
 	}
 }

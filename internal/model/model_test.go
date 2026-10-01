@@ -137,3 +137,11 @@ func TestReceiverRestoresCloudJSON(t *testing.T) {
 		t.Fatalf("round trip lost field: %s", data)
 	}
 }
+
+func TestSummaryDeferred(t *testing.T) {
+	r := SyncResult{Deferred: []string{"a", "b"}}
+	want := "uploaded 0, downloaded 0, deleted in cloud 0, deleted locally 0, adopted 0, conflicts 0, deferred 2"
+	if got := r.Summary(); got != want {
+		t.Fatalf("got %q", got)
+	}
+}

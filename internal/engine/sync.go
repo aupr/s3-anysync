@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/niceit/s3-anysync/internal/crypto"
@@ -22,13 +24,40 @@ func (r *Runner) Sync(ctx context.Context) (model.SyncResult, error) {
 // Resolve settles conflicts (path → winning side) and runs the rest of the
 // sync. The losing side is snapshotted or backed up first.
 func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (model.SyncResult, error) {
-	if len(choices) == 0 {
-		return model.SyncResult{}, errors.New("no conflict choices given")
-	}
 	for p, side := range choices {
 		if side != model.SideLocal && side != model.SideCloud {
 			return model.SyncResult{}, fmt.Errorf("%s: unknown side %q", p, side)
 		}
+	}
+	saved, err := r.d.Repo.LoadConflicts(r.action.ID)
+	if err != nil {
+		return model.SyncResult{}, fmt.Errorf("load conflicts: %w", err)
+	}
+	if len(saved) == 0 {
+		return model.SyncResult{}, errors.New("no unresolved conflicts")
+	}
+	isSaved := make(map[string]bool, len(saved))
+	for _, c := range saved {
+		isSaved[c.Path] = true
+	}
+	var unknown, missing []string
+	for p := range choices {
+		if !isSaved[p] {
+			unknown = append(unknown, p)
+		}
+	}
+	for _, c := range saved {
+		if _, ok := choices[c.Path]; !ok {
+			missing = append(missing, c.Path)
+		}
+	}
+	sort.Strings(unknown)
+	sort.Strings(missing)
+	if len(unknown) > 0 {
+		return model.SyncResult{}, fmt.Errorf("not a conflict of this action: %s", strings.Join(unknown, ", "))
+	}
+	if len(missing) > 0 {
+		return model.SyncResult{}, fmt.Errorf("choose a side for every conflict; missing: %s", strings.Join(missing, ", "))
 	}
 	return r.run(ctx, model.HistoryResolve, choices)
 }
@@ -73,7 +102,8 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 	if err != nil {
 		return model.SyncResult{}, false, fmt.Errorf("load baseline: %w", err)
 	}
-	baseline = filterOwned(baseline, ms)
+	fullBaseline := baseline
+	baseline = filterOwned(fullBaseline, ms)
 	local, err := scanLocal(ms, baseline)
 	if err != nil {
 		return model.SyncResult{}, false, fmt.Errorf("scan local files: %w", err)
@@ -90,6 +120,13 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 		ReceiverRestoresCloud: r.action.ReceiverRestoresCloud,
 		Local:                 local, Remote: remote, Baseline: baseline,
 	})
+	if !hasConflict(ops) {
+		// Nothing is in conflict any more (e.g. settled by hand): forget the
+		// saved ones now, even if the rest of this run fails.
+		if err := r.d.Repo.SaveConflicts(id, nil); err != nil {
+			return model.SyncResult{}, false, fmt.Errorf("clear conflicts: %w", err)
+		}
+	}
 	ops, conflicts := applyOverrides(ops, overrides, r.d.now().UTC())
 	if len(conflicts) > 0 {
 		if err := r.d.Repo.SaveConflicts(id, conflicts); err != nil {
@@ -122,7 +159,7 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 		}
 	}
 
-	res, err := r.apply(opCtx, ms, ops, baseline, &manifest)
+	res, err := r.apply(opCtx, ms, ops, baseline, fullBaseline, &manifest)
 	if err != nil {
 		return res, false, err
 	}
@@ -133,10 +170,34 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 	return res, false, nil
 }
 
-// applyOverrides turns chosen conflicts into uploads/downloads/deletes and
-// returns the conflicts that remain.
+func hasConflict(ops []Op) bool {
+	for _, op := range ops {
+		if op.Kind == OpConflict {
+			return true
+		}
+	}
+	return false
+}
+
+// applyOverrides turns chosen conflicts into uploads/downloads/deletes. If
+// any conflict is left without a choice, nothing is applied: it returns no
+// ops and ALL current conflicts (chosen or not), so none is silently dropped
+// and the whole action stays paused.
 func applyOverrides(ops []Op, overrides map[string]model.Side, now time.Time) ([]Op, []model.Conflict) {
-	var conflicts []model.Conflict
+	var all []model.Conflict
+	unchosen := false
+	for _, op := range ops {
+		if op.Kind != OpConflict {
+			continue
+		}
+		all = append(all, model.Conflict{Path: op.Path, Local: op.Local, Remote: op.Remote, DetectedAt: now})
+		if s := overrides[op.Path]; s != model.SideLocal && s != model.SideCloud {
+			unchosen = true
+		}
+	}
+	if unchosen {
+		return nil, all
+	}
 	out := make([]Op, 0, len(ops))
 	for _, op := range ops {
 		if op.Kind == OpConflict {
@@ -151,14 +212,11 @@ func applyOverrides(ops []Op, overrides map[string]model.Side, now time.Time) ([
 				if op.Remote == nil {
 					op.Kind = OpDeleteLocal
 				}
-			default:
-				conflicts = append(conflicts, model.Conflict{Path: op.Path, Local: op.Local, Remote: op.Remote, DetectedAt: now})
-				continue
 			}
 		}
 		out = append(out, op)
 	}
-	return out, conflicts
+	return out, nil
 }
 
 func hasWrites(ops []Op) bool {
@@ -206,19 +264,21 @@ func (r *Runner) guard(ctx context.Context, ms Mappings, ops []Op, reason string
 
 // apply executes ops in order, then writes the manifest (if the cloud
 // changed) and the new baseline. On a failed op it stops, but still records
-// what was done.
-func (r *Runner) apply(ctx context.Context, ms Mappings, ops []Op, baseline map[string]model.FileEntry, manifest *model.Manifest) (model.SyncResult, error) {
+// what was done. baseline is the owned subset used for planning; fullBaseline
+// also holds entries for paths this machine does not currently map, which are
+// carried over untouched.
+func (r *Runner) apply(ctx context.Context, ms Mappings, ops []Op, baseline, fullBaseline map[string]model.FileEntry, manifest *model.Manifest) (model.SyncResult, error) {
 	var res model.SyncResult
-	next := make(map[string]model.FileEntry, len(baseline))
-	for p, e := range baseline {
+	next := make(map[string]model.FileEntry, len(fullBaseline))
+	for p, e := range fullBaseline {
 		next[p] = e
 	}
 	remoteDirty := false
 	var opErr error
 loop:
 	for _, op := range ops {
-		if err := ctx.Err(); err != nil {
-			opErr = err
+		if ctx.Err() != nil {
+			opErr = fmt.Errorf("sync interrupted: %w", context.Cause(ctx))
 			break
 		}
 		switch op.Kind {
@@ -240,7 +300,11 @@ loop:
 			remoteDirty = true
 			res.Uploaded++
 		case OpDownload:
-			e, err := r.download(ctx, ms, *op.Remote)
+			e, err := r.download(ctx, ms, *op.Remote, op.Local)
+			if errors.Is(err, errLocalChanged) {
+				res.Deferred = append(res.Deferred, op.Path)
+				continue
+			}
 			if err != nil {
 				opErr = err
 				break loop
@@ -258,6 +322,10 @@ loop:
 			res.DeletedRemote++
 		case OpDeleteLocal:
 			if abs, ok := ms.LocalPathFor(op.Path); ok {
+				if checkLocal(abs, op.Local) == localChanged {
+					res.Deferred = append(res.Deferred, op.Path)
+					continue
+				}
 				if err := removeLocal(abs); err != nil {
 					opErr = fmt.Errorf("delete %s: %w", abs, err)
 					break loop
@@ -266,6 +334,9 @@ loop:
 			delete(next, op.Path)
 			res.DeletedLocal++
 		}
+	}
+	if opErr != nil && errors.Is(context.Cause(ctx), storage.ErrLockLost) && !errors.Is(opErr, storage.ErrLockLost) {
+		opErr = errors.Join(opErr, storage.ErrLockLost)
 	}
 	if remoteDirty {
 		if errors.Is(context.Cause(ctx), storage.ErrLockLost) {
@@ -318,7 +389,14 @@ func (r *Runner) upload(ctx context.Context, ms Mappings, e model.FileEntry) (mo
 	return e, nil
 }
 
-func (r *Runner) download(ctx context.Context, ms Mappings, e model.FileEntry) (model.FileEntry, error) {
+// errLocalChanged: the local destination no longer matches what the plan saw.
+var errLocalChanged = errors.New("local file changed during sync")
+
+// download fetches e from the cloud and writes it locally. seen is the local
+// entry the plan was based on (nil: absent). Right before writing, the
+// destination is re-examined; if it changed meanwhile nothing is written and
+// errLocalChanged is returned.
+func (r *Runner) download(ctx context.Context, ms Mappings, e model.FileEntry, seen *model.FileEntry) (model.FileEntry, error) {
 	abs, ok := ms.LocalPathFor(e.Path)
 	if !ok {
 		return e, fmt.Errorf("download %s: no local path on this machine", e.Path)
@@ -330,6 +408,9 @@ func (r *Runner) download(ctx context.Context, ms Mappings, e model.FileEntry) (
 	data, err := r.decode(e.Path, body, e.Hash)
 	if err != nil {
 		return e, err
+	}
+	if checkLocal(abs, seen) != localSame {
+		return e, errLocalChanged
 	}
 	info, err := writeFileAtomic(abs, data, time.Unix(0, e.MTime))
 	if err != nil {
