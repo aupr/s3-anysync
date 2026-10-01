@@ -79,7 +79,7 @@ func (r *Runner) writeSnapshot(ctx context.Context, reason string, files []model
 	if _, err := r.d.Storage.Put(ctx, r.layout.SnapshotIndex(ts), data, nil); err != nil {
 		return fail(err)
 	}
-	if err := r.applyRetention(ctx); err != nil {
+	if err := r.applyRetentionKeeping(ctx, ts); err != nil {
 		r.d.log().Warn("snapshot retention", "action", r.action.ID, "err", err)
 	}
 	return info, nil
@@ -145,6 +145,15 @@ func (r *Runner) snapshotInfo(ctx context.Context, ts string) (model.SnapshotInf
 // caller holds the action lock and its own index is already written).
 // SnapshotRetention < 1 keeps everything.
 func (r *Runner) applyRetention(ctx context.Context) error {
+	return r.applyRetentionKeeping(ctx, "")
+}
+
+// applyRetentionKeeping is applyRetention that never deletes the snapshot
+// protect (when non-empty), even if this machine's clock is behind the
+// machines that wrote the other snapshots. The protected snapshot counts
+// toward keep; the oldest non-protected ones are deleted until the total fits.
+// A failing delete does not stop the others; all errors are joined.
+func (r *Runner) applyRetentionKeeping(ctx context.Context, protect string) error {
 	keep := r.action.SnapshotRetention
 	if keep < 1 {
 		return nil
@@ -173,20 +182,34 @@ func (r *Runner) applyRetention(ctx context.Context) error {
 	sort.Sort(sort.Reverse(sort.StringSlice(kept)))
 	var doomed []string
 	if len(kept) > keep {
-		doomed = append(doomed, kept[keep:]...)
+		slots := keep
+		if protect != "" && indexed[protect] {
+			slots--
+		}
+		for _, ts := range kept {
+			if ts == protect {
+				continue
+			}
+			if slots > 0 {
+				slots--
+				continue
+			}
+			doomed = append(doomed, ts)
+		}
 	}
 	for ts := range hasObjects {
-		if !indexed[ts] {
+		if !indexed[ts] && ts != protect {
 			doomed = append(doomed, ts)
 		}
 	}
 	sort.Strings(doomed)
+	var errs []error
 	for _, ts := range doomed {
 		if err := r.deleteSnapshot(ctx, ts); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("delete snapshot %s: %w", ts, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // deleteSnapshot removes the index first, so a half-deleted snapshot is never listed.
@@ -204,4 +227,38 @@ func (r *Runner) deleteSnapshot(ctx context.Context, ts string) error {
 		}
 	}
 	return nil
+}
+
+// Snapshot takes a manual snapshot of everything in current/. Unless this
+// machine is cloud-to-local, it syncs first so local changes are included.
+func (r *Runner) Snapshot(ctx context.Context) (info model.SnapshotInfo, err error) {
+	started := r.d.now()
+	defer func() {
+		outcome, msg := model.OutcomeOK, fmt.Sprintf("snapshot %s with %d file(s)", info.TS, len(info.Files))
+		if err != nil {
+			outcome, msg = model.OutcomeError, err.Error()
+		}
+		r.addHistory(model.HistorySnapshot, started, outcome, msg)
+	}()
+	if r.action.DirectionFor(r.d.MachineID) != model.CloudToLocal {
+		res, err := r.Sync(ctx)
+		if err != nil {
+			return info, err
+		}
+		if res.Outcome == model.OutcomeConflict {
+			return info, ErrConflictPending
+		}
+	} else if err := r.refreshAction(ctx); err != nil {
+		return info, err
+	}
+	held, release, err := r.d.holdLock(ctx, r.layout)
+	if err != nil {
+		return info, err
+	}
+	defer release()
+	m, _, err := loadManifest(held, r.d.Storage, r.layout)
+	if err != nil {
+		return info, err
+	}
+	return r.writeSnapshot(held, ReasonManual, sortedEntries(m.Files))
 }

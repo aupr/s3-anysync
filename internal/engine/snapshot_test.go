@@ -243,3 +243,52 @@ func TestListSnapshotsReturnsTransientErrors(t *testing.T) {
 		t.Fatalf("corrupt index should be skipped: %v %v", list, err)
 	}
 }
+
+func TestRetentionNeverDeletesProtectedSnapshot(t *testing.T) {
+	r, mem, l := snapshotRunner(t, 2)
+	// Existing snapshots are newer than the one just written (clock behind).
+	for _, ts := range []string{"20270101T000000Z", "20270102T000000Z", "20270103T000000Z"} {
+		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{}`), nil)
+	}
+	mem.Put(ctx, l.SnapshotIndex("20260101T000000Z"), []byte(`{}`), nil)
+	if err := r.applyRetentionKeeping(ctx, "20260101T000000Z"); err != nil {
+		t.Fatal(err)
+	}
+	keys := snapKeys(mem, l)
+	if len(keys) != 2 {
+		t.Fatalf("keys = %v", keys)
+	}
+	if _, err := mem.Head(ctx, l.SnapshotIndex("20260101T000000Z")); err != nil {
+		t.Fatalf("protected snapshot deleted: %v", err)
+	}
+	if _, err := mem.Head(ctx, l.SnapshotIndex("20270103T000000Z")); err != nil {
+		t.Fatalf("newest other snapshot should fill the remaining slot: %v", err)
+	}
+}
+
+type deleteFailStore struct {
+	*storage.Memory
+	failKey string
+}
+
+func (d deleteFailStore) Delete(c context.Context, key string) error {
+	if strings.Contains(key, d.failKey) {
+		return errors.New("delete refused")
+	}
+	return d.Memory.Delete(c, key)
+}
+
+func TestRetentionContinuesPastDeleteFailure(t *testing.T) {
+	r, mem, l := snapshotRunner(t, 1)
+	for _, ts := range []string{"20260101T000000Z", "20260102T000000Z", "20260103T000000Z"} {
+		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{}`), nil)
+	}
+	r.d.Storage = deleteFailStore{mem, "20260101T000000Z"}
+	err := r.applyRetention(ctx)
+	if err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := mem.Head(ctx, l.SnapshotIndex("20260102T000000Z")); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("later snapshot not deleted after earlier failure: %v", err)
+	}
+}
