@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -49,7 +51,7 @@ type Locker struct {
 	Store     Storage
 	Key       string
 	MachineID string
-	// TTL is the lock lifetime; 0 means DefaultLockTTL.
+	// TTL is the lock lifetime; zero or negative means DefaultLockTTL.
 	TTL  time.Duration
 	Mode LockMode
 	// Settle is the best-effort wait between write and read-back.
@@ -58,9 +60,20 @@ type Locker struct {
 	// machine's lock still counts as held, to tolerate clock skew. 0 means
 	// DefaultSkewMargin; negative means no margin.
 	SkewMargin time.Duration
-	// RenewEvery is the Hold renewal period; 0 means TTL/3.
+	// RenewEvery is the Hold renewal period; 0 means TTL/3. It is clamped to
+	// [1ms, TTL/2] (the 1ms floor wins for tiny TTLs), so any value is safe.
 	RenewEvery time.Duration
 	Now        func() time.Time
+	// Logger receives warnings (e.g. a failed Release inside Hold's release
+	// func). nil discards them.
+	Logger *slog.Logger
+}
+
+func (l *Locker) logger() *slog.Logger {
+	if l.Logger != nil {
+		return l.Logger
+	}
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func (l *Locker) now() time.Time {
@@ -71,7 +84,7 @@ func (l *Locker) now() time.Time {
 }
 
 func (l *Locker) ttl() time.Duration {
-	if l.TTL == 0 {
+	if l.TTL <= 0 {
 		return DefaultLockTTL
 	}
 	return l.TTL
@@ -87,11 +100,46 @@ func (l *Locker) skewMargin() time.Duration {
 	return l.SkewMargin
 }
 
+const minRenew = time.Millisecond
+
+// renewEvery returns the renewal period clamped to [minRenew, TTL/2]; it is
+// never <= 0, so time.NewTicker cannot panic.
 func (l *Locker) renewEvery() time.Duration {
-	if l.RenewEvery > 0 {
-		return l.RenewEvery
+	ttl := l.ttl()
+	r := l.RenewEvery
+	if r <= 0 {
+		r = ttl / 3
 	}
-	return l.ttl() / 3
+	if r > ttl/2 {
+		r = ttl / 2
+	}
+	if r < minRenew {
+		r = minRenew
+	}
+	return r
+}
+
+// renewTimeout bounds a single Renew call: min(renewEvery, TTL/3), at least 1ms.
+func (l *Locker) renewTimeout() time.Duration {
+	t := l.renewEvery()
+	if third := l.ttl() / 3; third < t {
+		t = third
+	}
+	if t < minRenew {
+		t = minRenew
+	}
+	return t
+}
+
+// cutoff is how long after the last request was sent the held context must be
+// cancelled: one renew interval before the expiry that request wrote.
+func (l *Locker) cutoff() time.Duration {
+	ttl := l.ttl()
+	safety := l.renewEvery()
+	if safety > ttl/3 { // keep cutoff after the next renewal when RenewEvery is clamped to TTL/2
+		safety = ttl / 3
+	}
+	return ttl - safety
 }
 
 func (l *Locker) body() []byte {
@@ -238,18 +286,60 @@ func (l *Locker) Release(ctx context.Context) error {
 
 // Hold acquires the lock and keeps renewing it in the background. Use the
 // returned context for all remote work: it is cancelled with cause
-// ErrLockLost if the lock is lost. The returned release func is idempotent,
-// stops renewal and releases the lock; it is a no-op func when err != nil.
+// ErrLockLost if the lock is lost, or if renewals keep failing until one
+// renew interval before the last written expiry (always before another
+// machine may take over). The returned release func is idempotent, stops
+// renewal and releases the lock; it is a no-op func when err != nil.
 func (l *Locker) Hold(ctx context.Context) (context.Context, func(), error) {
+	sent := l.now() // the expiry written is based on a time no earlier than this
 	if err := l.Acquire(ctx); err != nil {
 		return ctx, func() {}, err
 	}
 	held, cancel := context.WithCancelCause(ctx)
 	stop := make(chan struct{})
-	done := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	lastOK := sent
+	getLastOK := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return lastOK
+	}
+	lost := func(err error) {
+		cancel(fmt.Errorf("%w: renewal failing since %s: %v", ErrLockLost, getLastOK().Format(time.RFC3339), err))
+	}
+	cutoff := l.cutoff()
+
+	// Watchdog: cancels at the local cutoff even if a tick or a Renew is stuck.
+	wg.Add(2)
 	go func() {
-		defer close(done)
-		lastOK := l.now()
+		defer wg.Done()
+		remaining := func() time.Duration {
+			d := cutoff - l.now().Sub(getLastOK())
+			if d < minRenew {
+				d = minRenew
+			}
+			return d
+		}
+		t := time.NewTimer(remaining())
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-held.Done():
+				return
+			case <-t.C:
+			}
+			if l.now().Sub(getLastOK()) >= cutoff {
+				lost(errors.New("no successful renewal before cutoff"))
+				return
+			}
+			t.Reset(remaining())
+		}
+	}()
+	go func() {
+		defer wg.Done()
 		tick := time.NewTicker(l.renewEvery())
 		defer tick.Stop()
 		for {
@@ -260,17 +350,22 @@ func (l *Locker) Hold(ctx context.Context) (context.Context, func(), error) {
 				return
 			case <-tick.C:
 			}
-			err := l.Renew(held)
+			before := l.now()
+			rctx, rcancel := context.WithTimeout(held, l.renewTimeout())
+			err := l.Renew(rctx)
+			rcancel()
 			switch {
 			case err == nil:
-				lastOK = l.now()
+				mu.Lock()
+				lastOK = before
+				mu.Unlock()
 			case errors.Is(err, ErrLockLost):
 				cancel(err)
 				return
 			case held.Err() != nil:
 				return
-			case l.now().Sub(lastOK) >= l.ttl():
-				cancel(fmt.Errorf("%w: renewal failing since %s: %v", ErrLockLost, lastOK.Format(time.RFC3339), err))
+			case l.now().Sub(getLastOK()) >= cutoff:
+				lost(err)
 				return
 			}
 		}
@@ -279,11 +374,13 @@ func (l *Locker) Hold(ctx context.Context) (context.Context, func(), error) {
 	release := func() {
 		once.Do(func() {
 			close(stop)
-			<-done
+			cancel(nil) // abort any in-flight Renew; cause stays context.Canceled
+			wg.Wait()
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer rcancel()
-			_ = l.Release(rctx)
-			cancel(nil)
+			if err := l.Release(rctx); err != nil {
+				l.logger().Warn("storage: lock release failed", "key", l.Key, "err", err)
+			}
 		})
 	}
 	return held, release, nil
