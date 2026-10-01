@@ -6661,6 +6661,19 @@ func TestTwoMachinesThroughApp(t *testing.T) {
 		t.Fatalf("B file = %q", data)
 	}
 
+	// Re-pointing an item drops its baseline, so an empty new folder is a
+	// first run (download), never a mass deletion in the cloud.
+	dirB2 := t.TempDir()
+	if err := b.MapItem(ctx, act.ID, it.ID, filepath.Join(dirB2, "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	if base, _ := b.DB.LoadBaseline(act.ID); len(base) != 0 {
+		t.Fatalf("baseline not dropped after re-mapping: %+v", base)
+	}
+	if res, err := rb.Sync(ctx); err != nil || res.DeletedRemote != 0 || res.Downloaded != 1 {
+		t.Fatalf("B sync after re-map = %+v, %v", res, err)
+	}
+
 	if err := b.SetMachineDirection(ctx, act.ID, model.CloudToLocal); err != nil {
 		t.Fatal(err)
 	}
@@ -6935,16 +6948,38 @@ func (a *App) MapItem(ctx context.Context, actionID, itemID, localPath string) e
 	if _, err := paths.Expand(localPath); err != nil {
 		return err
 	}
+	var remoteName string
 	_, err := a.updateShared(ctx, actionID, func(act *model.Action) error {
 		for i := range act.Items {
 			if act.Items[i].ID == itemID {
 				act.Items[i].LocalPaths[a.MachineID] = localPath
+				remoteName = act.Items[i].RemoteName
 				return nil
 			}
 		}
 		return fmt.Errorf("action has no item %s", itemID)
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Pointing an item at a (new) local path starts it from scratch: its old
+	// baseline would make an empty or different folder look like mass local
+	// deletions. The next sync then treats it like a first run.
+	return a.dropItemBaseline(actionID, remoteName)
+}
+
+// dropItemBaseline removes the baseline entries of one item (by remote name).
+func (a *App) dropItemBaseline(actionID, remoteName string) error {
+	base, err := a.DB.LoadBaseline(actionID)
+	if err != nil {
+		return err
+	}
+	for p := range base {
+		if p == remoteName || strings.HasPrefix(p, remoteName+"/") {
+			delete(base, p)
+		}
+	}
+	return a.DB.SaveBaseline(actionID, base)
 }
 
 // SetMachineDirection overrides the action's direction on this machine; "" removes the override.
