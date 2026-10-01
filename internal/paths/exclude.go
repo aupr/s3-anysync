@@ -12,6 +12,12 @@ import (
 // They are always excluded.
 const TempFilePrefix = ".s3-anysync-tmp-"
 
+// pattern represents a compiled exclude pattern.
+type pattern struct {
+	glob      string
+	wholePath bool
+}
+
 // Matcher matches slash-separated relative paths against exclude globs.
 // A pattern with a leading "/" is anchored to the item root and matches only
 // the whole relative path (e.g., "/root.txt" matches "root.txt" but not "a/b/root.txt").
@@ -20,12 +26,12 @@ const TempFilePrefix = ".s3-anysync-tmp-"
 // Matching is case-sensitive. Trailing "/" is ignored.
 // Backslashes in patterns are treated as separators.
 type Matcher struct {
-	patterns []string
+	patterns []pattern
 }
 
 // NewMatcher combines several pattern lists (for example the action's and an item's).
 func NewMatcher(lists ...[]string) (*Matcher, error) {
-	m := &Matcher{patterns: []string{TempFilePrefix + "*"}}
+	m := &Matcher{patterns: []pattern{{glob: TempFilePrefix + "*", wholePath: false}}}
 	for _, list := range lists {
 		for _, raw := range list {
 			p := strings.TrimSpace(raw)
@@ -36,15 +42,13 @@ func NewMatcher(lists ...[]string) (*Matcher, error) {
 			if p == "" {
 				continue
 			}
-			// Validate the pattern before adding marker
+			// Validate the pattern
 			if !doublestar.ValidatePattern(p) {
 				return nil, fmt.Errorf("invalid exclude pattern %q", raw)
 			}
-			// Mark anchored patterns with "^" prefix for later detection
-			if anchored {
-				p = "^" + p
-			}
-			m.patterns = append(m.patterns, p)
+			// wholePath is true if anchored OR if the trimmed pattern contains "/"
+			wholePath := anchored || strings.Contains(p, "/")
+			m.patterns = append(m.patterns, pattern{glob: p, wholePath: wholePath})
 		}
 	}
 	return m, nil
@@ -54,18 +58,12 @@ func NewMatcher(lists ...[]string) (*Matcher, error) {
 func (m *Matcher) Match(rel string) bool {
 	rel = strings.ReplaceAll(rel, `\`, "/")
 	base := path.Base(rel)
-	for _, p := range m.patterns {
-		// Check if pattern is anchored (marked with "^")
-		anchored := strings.HasPrefix(p, "^")
-		if anchored {
-			p = p[1:] // Remove the "^" marker
-		}
-
+	for _, pat := range m.patterns {
 		target := base
-		if anchored || strings.Contains(p, "/") {
+		if pat.wholePath {
 			target = rel
 		}
-		if ok, _ := doublestar.Match(p, target); ok {
+		if ok, _ := doublestar.Match(pat.glob, target); ok {
 			return true
 		}
 	}

@@ -58,3 +58,21 @@ func TestMatcherInvalidPattern(t *testing.T) {
 		t.Fatal("want error for invalid pattern")
 	}
 }
+
+func TestCaretPrefixPattern(t *testing.T) {
+	m, err := NewMatcher([]string{"^foo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]bool{
+		"^foo":   true,
+		"d/^foo": true,
+		"foo":    false,
+		"d/foo":  false,
+	}
+	for rel, want := range cases {
+		if got := m.Match(rel); got != want {
+			t.Errorf("Match(%q) = %v, want %v", rel, got, want)
+		}
+	}
+}
