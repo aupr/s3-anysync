@@ -31,6 +31,17 @@ type RestoreResult struct {
 // Restore copies files from snapshot ts back to the cloud, the local machine
 // or both. only limits the files (nil means all). The current versions are
 // snapshotted (cloud) or backed up (local) first. Restore never deletes files.
+//
+// Restoring to the cloud verifies every source object first, snapshots the
+// current cloud versions (never pruning snapshot ts), copies the objects into
+// current/ and updates the manifest (Writer = this machine).
+//
+// Restoring to local only rewrites the local files (after backing up the ones
+// it replaces); the sync baseline is NOT changed. On a two-way machine the
+// next sync therefore sees a local edit and uploads the restored content, or
+// reports a conflict if the cloud changed in the meantime. On a cloud-to-local
+// machine the next sync downloads the cloud version again, undoing the
+// restore. For a lasting rollback use RestoreCloud or RestoreBoth.
 func (r *Runner) Restore(ctx context.Context, ts string, only []string, target RestoreTarget) (res RestoreResult, err error) {
 	started := r.d.now()
 	defer func() {
@@ -113,6 +124,12 @@ func selectFiles(all []model.FileEntry, only []string) ([]model.FileEntry, error
 }
 
 func (r *Runner) restoreCloud(ctx context.Context, ts string, files []model.FileEntry) error {
+	// Nothing may change until every source object is known to exist.
+	for _, f := range files {
+		if _, err := r.d.Storage.Head(ctx, r.layout.SnapshotFile(ts, f.Path)); err != nil {
+			return fmt.Errorf("snapshot %s is missing the stored copy of %s, nothing was restored: %w", ts, f.Path, err)
+		}
+	}
 	m, _, err := loadManifest(ctx, r.d.Storage, r.layout)
 	if err != nil {
 		return err
@@ -124,24 +141,41 @@ func (r *Runner) restoreCloud(ctx context.Context, ts string, files []model.File
 		}
 	}
 	if len(victims) > 0 {
-		if _, err := r.writeSnapshot(ctx, ReasonPreRestore, victims); err != nil {
+		// The source snapshot must survive the retention pass of this one.
+		if _, err := r.writeSnapshotProtecting(ctx, ReasonPreRestore, victims, ts); err != nil {
 			return fmt.Errorf("safety snapshot: %w", err)
 		}
 	}
+	var copyErr error
+	copied := 0
 	for _, f := range files {
 		obj, err := r.d.Storage.Copy(ctx, r.layout.SnapshotFile(ts, f.Path), r.layout.Current(f.Path))
 		if err != nil {
-			return fmt.Errorf("restore %s to the cloud: %w", f.Path, err)
+			copyErr = fmt.Errorf("restore %s to the cloud: %w", f.Path, err)
+			break
 		}
 		e := f
 		e.ETag, e.Writer = obj.ETag, r.d.MachineID
 		m.Files[f.Path] = e
+		copied++
 	}
 	if errors.Is(context.Cause(ctx), storage.ErrLockLost) {
+		if copyErr != nil {
+			return fmt.Errorf("manifest not updated: %w: %w", storage.ErrLockLost, copyErr)
+		}
 		return fmt.Errorf("manifest not updated: %w", storage.ErrLockLost)
 	}
-	m.UpdatedAt, m.UpdatedBy = r.d.now().UTC(), r.d.MachineID
-	return saveManifest(context.WithoutCancel(ctx), r.d.Storage, r.layout, m)
+	if copied > 0 {
+		// Also after a partial failure, so current/ and the manifest agree.
+		m.UpdatedAt, m.UpdatedBy = r.d.now().UTC(), r.d.MachineID
+		if err := saveManifest(context.WithoutCancel(ctx), r.d.Storage, r.layout, m); err != nil {
+			if copyErr != nil {
+				return errors.Join(copyErr, fmt.Errorf("save manifest: %w", err))
+			}
+			return err
+		}
+	}
+	return copyErr
 }
 
 func (r *Runner) restoreLocal(ctx context.Context, ts string, files []model.FileEntry, ms Mappings) (done, skipped []string, err error) {

@@ -292,3 +292,23 @@ func TestRetentionContinuesPastDeleteFailure(t *testing.T) {
 		t.Fatalf("later snapshot not deleted after earlier failure: %v", err)
 	}
 }
+
+func TestRetentionProtectsSeveralSnapshots(t *testing.T) {
+	r, mem, l := snapshotRunner(t, 2)
+	all := []string{"20260101T000000Z", "20260102T000000Z", "20260103T000000Z", "20260104T000000Z"}
+	for _, ts := range all {
+		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{}`), nil)
+	}
+	if err := r.applyRetentionKeeping(ctx, all[3], all[0]); err != nil {
+		t.Fatal(err)
+	}
+	keys := snapKeys(mem, l)
+	if len(keys) != 2 {
+		t.Fatalf("keys = %v", keys)
+	}
+	for _, ts := range []string{all[0], all[3]} {
+		if _, err := mem.Head(ctx, l.SnapshotIndex(ts)); err != nil {
+			t.Fatalf("protected %s deleted: %v", ts, err)
+		}
+	}
+}

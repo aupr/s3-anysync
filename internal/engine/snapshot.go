@@ -56,6 +56,12 @@ func (r *Runner) newSnapshotTS(ctx context.Context) (string, error) {
 // If any step fails, everything already written for this snapshot is removed
 // (best effort, even when ctx was cancelled) and the original error returned.
 func (r *Runner) writeSnapshot(ctx context.Context, reason string, files []model.FileEntry) (model.SnapshotInfo, error) {
+	return r.writeSnapshotProtecting(ctx, reason, files)
+}
+
+// writeSnapshotProtecting is writeSnapshot whose retention pass also never
+// deletes the extraProtect snapshots (for example the source of a restore).
+func (r *Runner) writeSnapshotProtecting(ctx context.Context, reason string, files []model.FileEntry, extraProtect ...string) (model.SnapshotInfo, error) {
 	ts, err := r.newSnapshotTS(ctx)
 	if err != nil {
 		return model.SnapshotInfo{}, err
@@ -79,7 +85,7 @@ func (r *Runner) writeSnapshot(ctx context.Context, reason string, files []model
 	if _, err := r.d.Storage.Put(ctx, r.layout.SnapshotIndex(ts), data, nil); err != nil {
 		return fail(err)
 	}
-	if err := r.applyRetentionKeeping(ctx, ts); err != nil {
+	if err := r.applyRetentionKeeping(ctx, append([]string{ts}, extraProtect...)...); err != nil {
 		r.d.log().Warn("snapshot retention", "action", r.action.ID, "err", err)
 	}
 	return info, nil
@@ -145,15 +151,15 @@ func (r *Runner) snapshotInfo(ctx context.Context, ts string) (model.SnapshotInf
 // caller holds the action lock and its own index is already written).
 // SnapshotRetention < 1 keeps everything.
 func (r *Runner) applyRetention(ctx context.Context) error {
-	return r.applyRetentionKeeping(ctx, "")
+	return r.applyRetentionKeeping(ctx)
 }
 
-// applyRetentionKeeping is applyRetention that never deletes the snapshot
-// protect (when non-empty), even if this machine's clock is behind the
-// machines that wrote the other snapshots. The protected snapshot counts
-// toward keep; the oldest non-protected ones are deleted until the total fits.
+// applyRetentionKeeping is applyRetention that never deletes the protected
+// snapshots, even if this machine's clock is behind the machines that wrote
+// the other snapshots. Protected snapshots count toward keep; the oldest
+// non-protected ones are deleted until the total fits.
 // A failing delete does not stop the others; all errors are joined.
-func (r *Runner) applyRetentionKeeping(ctx context.Context, protect string) error {
+func (r *Runner) applyRetentionKeeping(ctx context.Context, protect ...string) error {
 	keep := r.action.SnapshotRetention
 	if keep < 1 {
 		return nil
@@ -175,6 +181,12 @@ func (r *Runner) applyRetentionKeeping(ctx context.Context, protect string) erro
 			indexed[ts] = true
 		}
 	}
+	prot := map[string]bool{}
+	for _, ts := range protect {
+		if ts != "" {
+			prot[ts] = true
+		}
+	}
 	var kept []string
 	for ts := range indexed {
 		kept = append(kept, ts)
@@ -183,11 +195,13 @@ func (r *Runner) applyRetentionKeeping(ctx context.Context, protect string) erro
 	var doomed []string
 	if len(kept) > keep {
 		slots := keep
-		if protect != "" && indexed[protect] {
-			slots--
+		for _, ts := range kept {
+			if prot[ts] {
+				slots--
+			}
 		}
 		for _, ts := range kept {
-			if ts == protect {
+			if prot[ts] {
 				continue
 			}
 			if slots > 0 {
@@ -198,7 +212,7 @@ func (r *Runner) applyRetentionKeeping(ctx context.Context, protect string) erro
 		}
 	}
 	for ts := range hasObjects {
-		if !indexed[ts] && ts != protect {
+		if !indexed[ts] && !prot[ts] {
 			doomed = append(doomed, ts)
 		}
 	}
