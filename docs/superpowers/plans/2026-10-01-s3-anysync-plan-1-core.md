@@ -2410,6 +2410,8 @@ git commit -m "feat(storage): storage port, in-memory store and contract tests" 
 
 ### Task 7: Remote lock
 
+> **Amended during execution (user decision after review):** the Locker was extended beyond the code below with `Renew`, `Hold` (acquire plus background renewal, returning a context cancelled with cause `ErrLockLost`), `ErrLockLost`, `SkewMargin`, `RenewEvery`, `Logger`, `DefaultLockTTL`, `DefaultSkewMargin`, a `Release` that never deletes an expired or foreign lock, and clamped timing. Engine tasks 9, 15 and 16 use `Hold` through `Deps.holdLock` instead of `Acquire`/`Release`.
+
 **Files:**
 - Create: `internal/storage/lock.go`
 - Test: `internal/storage/lock_test.go`
@@ -3226,7 +3228,7 @@ git commit -m "feat(storage): S3 adapter, connection probe and integration tests
     - `LoadBaseline(string) (map[string]model.FileEntry, error)` and `SaveBaseline(string, map[string]model.FileEntry) error`
     - `SaveConflicts(string, []model.Conflict) error` and `LoadConflicts(string) ([]model.Conflict, error)`
     - `AddHistory(model.HistoryEntry) error`
-  - `Deps{Storage, Repo, MachineID, MachineName, Passphrase, BackupRoot, LockMode, LockSettle, Expand, Now, Log}`
+  - `Deps{Storage, Repo, MachineID, MachineName, Passphrase, BackupRoot, LockMode, LockSettle, Expand, Now, Log}`, and the unexported `(Deps).holdLock(ctx, Layout) (context.Context, func(), error)`, a wrapper over `storage.Locker.Hold` (renews the lock while held; the returned context is cancelled with cause `storage.ErrLockLost` if the lock is lost; the release func is always non-nil and idempotent)
   - `Layout`, created by `NewLayout(root, actionID)`, with methods `ActionJSON()`, `Manifest()`, `Lock()`, `KeyCheck()`, `CurrentPrefix()`, `Current(p)`, `SnapshotsPrefix()`, `SnapshotFile(ts, p)`, `SnapshotIndex(ts)`
   - Unexported helpers `loadManifest(ctx, s, l) (model.Manifest, string, error)`, `manifestETag`, `saveManifest` and `sortedEntries`
   - `FetchAction(ctx, s, root, id) (model.Action, error)`
@@ -3460,6 +3462,7 @@ Create `internal/engine/deps.go`:
 package engine
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"time"
@@ -3537,11 +3540,16 @@ func (d Deps) expand(p string) (string, error) {
 	return paths.Expand(p)
 }
 
-func (d Deps) locker(l Layout) *storage.Locker {
-	return &storage.Locker{
+// holdLock takes the action lock and keeps it renewed until release is
+// called. Use the returned context for all remote work: it is cancelled with
+// cause storage.ErrLockLost if the lock is lost. release is always non-nil
+// and safe to call more than once, even when err != nil.
+func (d Deps) holdLock(ctx context.Context, l Layout) (context.Context, func(), error) {
+	lk := &storage.Locker{
 		Store: d.Storage, Key: l.Lock(), MachineID: d.MachineID, TTL: LockTTL,
-		Mode: d.LockMode, Settle: d.LockSettle, Now: d.Now,
+		Mode: d.LockMode, Settle: d.LockSettle, Now: d.Now, Logger: d.Log,
 	}
+	return lk.Hold(ctx)
 }
 ```
 
@@ -3809,15 +3817,12 @@ func VerifyPassphrase(ctx context.Context, d Deps, root string, a model.Action) 
 // in the result.
 func UpdateSharedAction(ctx context.Context, d Deps, root, id string, mutate func(*model.Action) error) (model.Action, error) {
 	l := NewLayout(root, id)
-	lk := d.locker(l)
-	if err := lk.Acquire(ctx); err != nil {
+	held, release, err := d.holdLock(ctx, l)
+	if err != nil {
 		return model.Action{}, err
 	}
-	defer func() {
-		if err := lk.Release(context.WithoutCancel(ctx)); err != nil {
-			d.log().Warn("release lock", "action", id, "err", err)
-		}
-	}()
+	defer release()
+	ctx = held
 	a, err := FetchAction(ctx, d.Storage, root, id)
 	if err != nil {
 		return model.Action{}, err
@@ -5685,6 +5690,7 @@ import (
 
 	"github.com/niceit/s3-anysync/internal/crypto"
 	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/niceit/s3-anysync/internal/storage"
 )
 
 // Sync runs one sync of the action. A conflict is not an error: the result's
@@ -5771,17 +5777,15 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 		return model.SyncResult{Outcome: model.OutcomeConflict, Conflicts: conflicts}, false, nil
 	}
 
+	opCtx := ctx
 	if hasWrites(ops) {
-		lk := r.d.locker(r.layout)
-		if err := lk.Acquire(ctx); err != nil {
+		held, release, err := r.d.holdLock(ctx, r.layout)
+		if err != nil {
 			return model.SyncResult{}, false, err
 		}
-		defer func() {
-			if err := lk.Release(context.WithoutCancel(ctx)); err != nil {
-				r.d.log().Warn("release lock", "action", id, "err", err)
-			}
-		}()
-		current, err := manifestETag(ctx, r.d.Storage, r.layout)
+		defer release()
+		opCtx = held
+		current, err := manifestETag(opCtx, r.d.Storage, r.layout)
 		if err != nil {
 			return model.SyncResult{}, false, err
 		}
@@ -5792,12 +5796,12 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 		if overrides != nil {
 			reason = ReasonPreResolve
 		}
-		if err := r.guard(ctx, ms, ops, reason); err != nil {
+		if err := r.guard(opCtx, ms, ops, reason); err != nil {
 			return model.SyncResult{}, false, err
 		}
 	}
 
-	res, err := r.apply(ctx, ms, ops, baseline, &manifest)
+	res, err := r.apply(opCtx, ms, ops, baseline, &manifest)
 	if err != nil {
 		return res, false, err
 	}
@@ -5943,6 +5947,11 @@ loop:
 		}
 	}
 	if remoteDirty {
+		if errors.Is(context.Cause(ctx), storage.ErrLockLost) {
+			// Another machine may now be writing the manifest. Keep the old
+			// baseline too; the next run re-plans from what is really there.
+			return res, errors.Join(opErr, storage.ErrLockLost)
+		}
 		manifest.UpdatedAt = r.d.now().UTC()
 		manifest.UpdatedBy = r.d.MachineID
 		if err := saveManifest(context.WithoutCancel(ctx), r.d.Storage, r.layout, *manifest); err != nil {
@@ -6023,6 +6032,79 @@ func (r *Runner) decode(p string, body []byte, wantHash string) ([]byte, error) 
 	return data, nil
 }
 ```
+
+Also create `internal/engine/lostlock_test.go` (a unit test of `apply`: when the lock is lost after a cloud write, the manifest and the baseline must not be written):
+
+```go
+package engine
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/niceit/s3-anysync/internal/storage"
+)
+
+// loseLockOnPut cancels a context with ErrLockLost right after the first Put
+// of a file under current/, as if the lock renewal had failed.
+type loseLockOnPut struct {
+	*storage.Memory
+	cancel context.CancelCauseFunc
+	prefix string
+}
+
+func (s *loseLockOnPut) Put(c context.Context, key string, body []byte, meta map[string]string) (storage.Object, error) {
+	obj, err := s.Memory.Put(c, key, body, meta)
+	if err == nil && len(key) >= len(s.prefix) && key[:len(s.prefix)] == s.prefix {
+		s.cancel(storage.ErrLockLost)
+	}
+	return obj, err
+}
+
+func TestApplySkipsManifestAndBaselineWhenLockIsLost(t *testing.T) {
+	mem := storage.NewMemory()
+	l := NewLayout("cfg", "act")
+	lockCtx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	d := memDeps(mem, "A")
+	d.Storage = &loseLockOnPut{Memory: mem, cancel: cancel, prefix: l.CurrentPrefix()}
+	d.Repo = newDB(t)
+	a := basicAction("act")
+
+	home := t.TempDir()
+	d.Expand = func(p string) (string, error) { return p, nil }
+	a.Items[0].LocalPaths["A"] = home + "/settings.json"
+	writeFile(t, home+"/settings.json", `{"v":1}`)
+	r := NewRunner(d, "cfg", a)
+	ms, err := BuildMappings(a, "A", d.Expand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := scanLocal(ms, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := local["settings.json"]
+	ops := []Op{{Path: "settings.json", Kind: OpUpload, Local: &entry}, {Path: "zzz-never-uploaded.json", Kind: OpDeleteRemote}}
+	manifest := model.Manifest{Files: map[string]model.FileEntry{}}
+
+	_, err = r.apply(lockCtx, ms, ops, map[string]model.FileEntry{}, &manifest)
+	if !errors.Is(err, storage.ErrLockLost) {
+		t.Fatalf("want ErrLockLost, got %v", err)
+	}
+	if _, err := mem.Head(context.Background(), l.Manifest()); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("manifest was written although the lock was lost (err=%v)", err)
+	}
+	if b, _ := d.Repo.LoadBaseline("act"); len(b) != 0 {
+		t.Fatalf("baseline was saved although the lock was lost: %+v", b)
+	}
+}
+```
+
+Run: `go test ./internal/engine/ -run TestApplySkips -v`
+Expected: PASS. (The upload happens, the context is then cancelled with `storage.ErrLockLost`, the second op is not executed, and neither manifest nor baseline is written.)
 
 - [ ] **Step 5: Run the scenarios to verify they pass**
 
@@ -6228,20 +6310,16 @@ func (r *Runner) Snapshot(ctx context.Context) (info model.SnapshotInfo, err err
 	} else if err := r.refreshAction(ctx); err != nil {
 		return info, err
 	}
-	lk := r.d.locker(r.layout)
-	if err := lk.Acquire(ctx); err != nil {
-		return info, err
-	}
-	defer func() {
-		if err := lk.Release(context.WithoutCancel(ctx)); err != nil {
-			r.d.log().Warn("release lock", "action", r.action.ID, "err", err)
-		}
-	}()
-	m, _, err := loadManifest(ctx, r.d.Storage, r.layout)
+	held, release, err := r.d.holdLock(ctx, r.layout)
 	if err != nil {
 		return info, err
 	}
-	return r.writeSnapshot(ctx, ReasonManual, sortedEntries(m.Files))
+	defer release()
+	m, _, err := loadManifest(held, r.d.Storage, r.layout)
+	if err != nil {
+		return info, err
+	}
+	return r.writeSnapshot(held, ReasonManual, sortedEntries(m.Files))
 }
 ```
 
@@ -6252,12 +6330,14 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/niceit/s3-anysync/internal/storage"
 )
 
 // RestoreTarget says which side a restore writes to.
@@ -6307,15 +6387,12 @@ func (r *Runner) Restore(ctx context.Context, ts string, only []string, target R
 		return res, err
 	}
 
-	lk := r.d.locker(r.layout)
-	if err = lk.Acquire(ctx); err != nil {
+	held, release, err := r.d.holdLock(ctx, r.layout)
+	if err != nil {
 		return res, err
 	}
-	defer func() {
-		if err := lk.Release(context.WithoutCancel(ctx)); err != nil {
-			r.d.log().Warn("release lock", "action", r.action.ID, "err", err)
-		}
-	}()
+	defer release()
+	ctx = held
 
 	restored := map[string]bool{}
 	if target != RestoreLocal {
@@ -6387,6 +6464,9 @@ func (r *Runner) restoreCloud(ctx context.Context, ts string, files []model.File
 		e := f
 		e.ETag, e.Writer = obj.ETag, r.d.MachineID
 		m.Files[f.Path] = e
+	}
+	if errors.Is(context.Cause(ctx), storage.ErrLockLost) {
+		return fmt.Errorf("manifest not updated: %w", storage.ErrLockLost)
 	}
 	m.UpdatedAt, m.UpdatedBy = r.d.now().UTC(), r.d.MachineID
 	return saveManifest(context.WithoutCancel(ctx), r.d.Storage, r.layout, m)
