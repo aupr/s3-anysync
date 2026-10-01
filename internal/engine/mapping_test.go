@@ -197,3 +197,140 @@ func TestFilterOwnedKeySurvival(t *testing.T) {
 		t.Errorf("filterOwned should keep 'settings.json', got keys: %v", got)
 	}
 }
+
+func TestNilMatcherFailsClosed(t *testing.T) {
+	// Test that a Mapping with nil matcher does not match anything
+	// This gate protects deletes
+	tests := []struct {
+		name   string
+		remKey string
+		typ    model.ItemType
+	}{
+		{"ItemFile", "x", model.ItemFile},
+		{"ItemDir", "x", model.ItemDir},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ms := Mappings{
+				{ItemID: "x", RemoteName: tt.remKey, Type: tt.typ, LocalPath: "/a", matcher: nil},
+			}
+			_, ok := ms.LocalPathFor(tt.remKey)
+			if ok {
+				t.Errorf("LocalPathFor with nil matcher should return ok=false")
+			}
+			_, ok = ms.LocalPathFor(tt.remKey + "/y")
+			if ok {
+				t.Errorf("LocalPathFor subpath with nil matcher should return ok=false")
+			}
+		})
+	}
+}
+
+func TestMalformedRemoteNameNoMatch(t *testing.T) {
+	// Build a mapping via BuildMappings (which always sets a matcher),
+	// then mutate RemoteName to test the guard.
+	// A clean helper that builds a mapping.
+	buildOne := func(remoteName string) Mapping {
+		a := model.Action{
+			ID:   "a",
+			Name: "a",
+			Items: []model.Item{
+				{ID: "x", RemoteName: "valid", Type: model.ItemDir, LocalPaths: map[string]string{"M": "/a"}},
+			},
+		}
+		a.ApplyDefaults()
+		ms, err := BuildMappings(a, "M", identity)
+		if err != nil || len(ms) == 0 {
+			t.Fatalf("failed to build mapping: %v", err)
+		}
+		m := ms[0]
+		m.RemoteName = remoteName
+		return m
+	}
+
+	tests := []string{
+		"",       // empty
+		".",      // current dir
+		"/x",     // leading slash
+		"x/",     // trailing slash
+		"a//b",   // double slash (not clean)
+		"./a",    // starts with . (not clean)
+		"a/../b", // contains .. (not clean)
+		`a\b`,    // backslash
+		"a:b",    // colon
+		"a\x00b", // NUL
+		"a\x01b", // control char
+	}
+
+	for _, remoteName := range tests {
+		t.Run(remoteName, func(t *testing.T) {
+			m := buildOne(remoteName)
+			ms := Mappings{m}
+
+			// None of these malformed RemoteNames should match anything
+			testKeys := []string{"x/y", "a/b", "b", "a//b"}
+			for _, key := range testKeys {
+				_, ok := ms.LocalPathFor(key)
+				if ok {
+					t.Errorf("LocalPathFor(%q) should return ok=false for RemoteName %q", key, remoteName)
+				}
+			}
+		})
+	}
+}
+
+func TestCleanRemoteNameMatches(t *testing.T) {
+	// A clean RemoteName "a/b" should match "a/b/c"
+	a := model.Action{
+		ID:   "a",
+		Name: "a",
+		Items: []model.Item{
+			{ID: "x", RemoteName: "a/b", Type: model.ItemDir, LocalPaths: map[string]string{"M": "/a"}},
+		},
+	}
+	a.ApplyDefaults()
+	ms, err := BuildMappings(a, "M", identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) == 0 {
+		t.Fatal("no mapping built")
+	}
+
+	p, ok := ms.LocalPathFor("a/b/c")
+	if !ok {
+		t.Errorf("LocalPathFor(a/b/c) should match clean RemoteName a/b")
+	}
+	if !strings.Contains(p, "c") {
+		t.Errorf("LocalPathFor(a/b/c) path %q should contain 'c'", p)
+	}
+}
+
+func TestBuildMappingsErrorTextIncludesRemoteName(t *testing.T) {
+	// Test that error text includes RemoteName when expand fails
+	a := model.Action{
+		ID:   "a",
+		Name: "a",
+		Items: []model.Item{
+			{ID: "x", RemoteName: "test-item", Type: model.ItemDir, LocalPaths: map[string]string{"M": "/x"}},
+		},
+	}
+	a.ApplyDefaults()
+
+	_, err := BuildMappings(a, "M", func(string) (string, error) {
+		return "", errors.New("expand failed")
+	})
+	if err == nil || !strings.Contains(err.Error(), "test-item") {
+		t.Errorf("BuildMappings error should contain RemoteName, got: %v", err)
+	}
+
+	// Test relative path error
+	a.Items[0].RemoteName = "relative-item"
+	_, err = BuildMappings(a, "M", func(string) (string, error) {
+		return "relative/path", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "relative-item") {
+		t.Errorf("BuildMappings relative path error should contain RemoteName, got: %v", err)
+	}
+}

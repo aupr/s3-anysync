@@ -74,8 +74,10 @@ func safeRel(rel string) bool {
 
 func (ms Mappings) resolve(remotePath string) (Mapping, string, bool) {
 	for _, m := range ms {
-		// Guard against malformed RemoteName (empty or starts/ends with "/")
-		if m.RemoteName == "" || strings.HasPrefix(m.RemoteName, "/") || strings.HasSuffix(m.RemoteName, "/") {
+		// Guard against malformed RemoteName: must be non-empty, clean, normalized,
+		// and contain no unsafe characters (backslash, ':', NUL, control chars).
+		// Fail closed on nil matcher (gates deletes).
+		if m.RemoteName == "" || m.RemoteName == "." || path.Clean(m.RemoteName) != m.RemoteName || !safeRel(m.RemoteName) || m.matcher == nil {
 			continue
 		}
 		switch m.Type {
@@ -99,8 +101,8 @@ func (ms Mappings) LocalPathFor(remotePath string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	// Check excludes: treat nil matcher as "no excludes"
-	if m.matcher != nil && m.matcher.MatchPath(rel) {
+	// Check excludes: resolve guarantees m.matcher is non-nil
+	if m.matcher.MatchPath(rel) {
 		return "", false
 	}
 	if m.Type == model.ItemFile {
