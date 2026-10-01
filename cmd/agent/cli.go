@@ -100,6 +100,8 @@ func explain(err error) string {
 		return "  hint: the passphrase is wrong or the cloud data is damaged; check S3_ANYSYNC_PASSPHRASE."
 	case errors.Is(err, engine.ErrPassphraseMissing):
 		return "  hint: this action is encrypted; set S3_ANYSYNC_PASSPHRASE and re-run the same command (action create / action join / sync)."
+	case errors.Is(err, engine.ErrRootMissing):
+		return "  hint: an item's folder is missing (unmounted drive or renamed folder?); restore or re-mount it. If it was removed on purpose, unmap the item and map it again."
 	case errors.Is(err, storage.ErrLocked):
 		return "  hint: another machine is syncing this action; try again in a minute."
 	case errors.Is(err, storage.ErrLockLost):

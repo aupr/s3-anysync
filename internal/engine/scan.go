@@ -44,6 +44,10 @@ func refuseDeleted(p string) error {
 	return fmt.Errorf("scan: %s is a dangling symlink (or special file) but was synced before; refusing to treat it as deleted", p)
 }
 
+func rootMissing(m Mapping) error {
+	return fmt.Errorf("scan: item %s: %s does not exist but its content was synced before; refusing to treat it as deleted (if it was removed on purpose, unmap the item and map it again): %w", m.RemoteName, m.LocalPath, ErrRootMissing)
+}
+
 func hasBaselineUnder(baseline map[string]model.FileEntry, remoteName string) bool {
 	for k := range baseline {
 		if strings.HasPrefix(k, remoteName+"/") {
@@ -58,6 +62,11 @@ func scanFile(m Mapping, baseline, out map[string]model.FileEntry) error {
 		return nil
 	}
 	if _, err := os.Lstat(m.LocalPath); errors.Is(err, fs.ErrNotExist) {
+		if _, ok := baseline[m.RemoteName]; ok {
+			if _, perr := os.Stat(filepath.Dir(m.LocalPath)); errors.Is(perr, fs.ErrNotExist) {
+				return rootMissing(m)
+			}
+		}
 		return nil
 	}
 	info, err := os.Stat(m.LocalPath)
@@ -98,6 +107,9 @@ func scanDir(m Mapping, baseline, out map[string]model.FileEntry) error {
 	root := m.LocalPath
 	li, err := os.Lstat(root)
 	if errors.Is(err, fs.ErrNotExist) {
+		if hasBaselineUnder(baseline, m.RemoteName) {
+			return rootMissing(m)
+		}
 		return nil
 	}
 	if err != nil {
