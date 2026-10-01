@@ -13,6 +13,7 @@ var (
 	ErrNotFound               = errors.New("storage: object not found")
 	ErrPreconditionFailed     = errors.New("storage: precondition failed")
 	ErrAccessDenied           = errors.New("storage: access denied")
+	ErrNoSuchBucket           = errors.New("storage: bucket not found")
 	ErrConditionalUnsupported = errors.New("storage: conditional writes not supported")
 )
 

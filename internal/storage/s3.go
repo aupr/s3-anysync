@@ -26,7 +26,9 @@ type S3Config struct {
 	PathStyle       bool
 }
 
-// S3 is a Storage on any S3-compatible service.
+// S3 is a Storage on any S3-compatible service. The credentials need
+// s3:ListBucket on the bucket as well as object read/write/delete: without it
+// S3 answers 403 (not 404) for missing keys, which surfaces as ErrAccessDenied.
 type S3 struct {
 	client *s3.Client
 	bucket string
@@ -63,6 +65,9 @@ func NewS3(cfg S3Config) (*S3, error) {
 }
 
 func (s *S3) put(ctx context.Context, in *s3.PutObjectInput, body []byte) (Object, error) {
+	if err := checkMetadata(in.Metadata); err != nil {
+		return Object{}, err
+	}
 	in.Bucket = aws.String(s.bucket)
 	in.Body = bytes.NewReader(body)
 	in.ContentLength = aws.Int64(int64(len(body)))
@@ -71,6 +76,24 @@ func (s *S3) put(ctx context.Context, in *s3.PutObjectInput, body []byte) (Objec
 		return Object{}, mapErr(err)
 	}
 	return Object{Key: aws.ToString(in.Key), Size: int64(len(body)), ETag: aws.ToString(out.ETag), Metadata: lowerKeys(in.Metadata)}, nil
+}
+
+// checkMetadata enforces what S3 user metadata allows: printable ASCII only.
+func checkMetadata(meta map[string]string) error {
+	ok := func(v string) bool {
+		for i := 0; i < len(v); i++ {
+			if v[i] < 0x20 || v[i] > 0x7e {
+				return false
+			}
+		}
+		return true
+	}
+	for k, v := range meta {
+		if !ok(k) || !ok(v) {
+			return fmt.Errorf("storage: metadata %q has non-ASCII or control characters", k)
+		}
+	}
+	return nil
 }
 
 func (s *S3) Put(ctx context.Context, key string, body []byte, meta map[string]string) (Object, error) {
@@ -201,27 +224,29 @@ func mapErr(err error) error {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
+		case "NoSuchBucket":
+			return fmt.Errorf("%w: %w", ErrNoSuchBucket, err)
 		case "NoSuchKey", "NotFound":
-			return fmt.Errorf("%w: %v", ErrNotFound, err)
+			return fmt.Errorf("%w: %w", ErrNotFound, err)
 		case "PreconditionFailed", "ConditionalRequestConflict":
-			return fmt.Errorf("%w: %v", ErrPreconditionFailed, err)
+			return fmt.Errorf("%w: %w", ErrPreconditionFailed, err)
 		case "AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch":
-			return fmt.Errorf("%w: %v", ErrAccessDenied, err)
+			return fmt.Errorf("%w: %w", ErrAccessDenied, err)
 		case "NotImplemented":
-			return fmt.Errorf("%w: %v", ErrConditionalUnsupported, err)
+			return fmt.Errorf("%w: %w", ErrConditionalUnsupported, err)
 		}
 	}
 	var respErr *awshttp.ResponseError
 	if errors.As(err, &respErr) {
 		switch respErr.HTTPStatusCode() {
 		case 404:
-			return fmt.Errorf("%w: %v", ErrNotFound, err)
+			return fmt.Errorf("%w: %w", ErrNotFound, err)
 		case 412:
-			return fmt.Errorf("%w: %v", ErrPreconditionFailed, err)
+			return fmt.Errorf("%w: %w", ErrPreconditionFailed, err)
 		case 403:
-			return fmt.Errorf("%w: %v", ErrAccessDenied, err)
+			return fmt.Errorf("%w: %w", ErrAccessDenied, err)
 		case 501:
-			return fmt.Errorf("%w: %v", ErrConditionalUnsupported, err)
+			return fmt.Errorf("%w: %w", ErrConditionalUnsupported, err)
 		}
 	}
 	return err

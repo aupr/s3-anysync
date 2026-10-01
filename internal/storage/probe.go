@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ProbeResult reports which operations the credentials and provider support.
@@ -18,10 +19,24 @@ type ProbeResult struct {
 	ConditionalWrites bool `json:"conditionalWrites"`
 }
 
-// Probe exercises list, put, get, delete and conditional writes under
-// prefix, and removes everything it wrote.
+// Probe exercises list (via ListPrefixes), put, get, delete and conditional
+// writes under prefix. Delete is reported true only when the explicit delete
+// step succeeded. On any failure after the first write, the probe objects it
+// created are still removed by a best-effort cleanup that survives ctx
+// cancellation (10s timeout), so nothing is left behind where possible.
 func Probe(ctx context.Context, s Storage, prefix string) (ProbeResult, error) {
 	var res ProbeResult
+	var created []string
+	defer func() {
+		if len(created) == 0 {
+			return
+		}
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		for _, k := range created {
+			_ = s.Delete(cctx, k) // best effort; Delete of a missing key is fine
+		}
+	}()
 	token := make([]byte, 8)
 	rand.Read(token)
 	base := JoinKey(prefix, ".s3-anysync-probe-"+hex.EncodeToString(token))
@@ -40,6 +55,7 @@ func Probe(ctx context.Context, s Storage, prefix string) (ProbeResult, error) {
 	if _, err := s.Put(ctx, dataKey, payload, nil); err != nil {
 		return res, fmt.Errorf("put: %w", err)
 	}
+	created = append(created, dataKey)
 	res.Put = true
 
 	got, _, err := s.Get(ctx, dataKey)
@@ -51,9 +67,13 @@ func Probe(ctx context.Context, s Storage, prefix string) (ProbeResult, error) {
 	}
 	res.Get = true
 
-	res.ConditionalWrites = probeConditional(ctx, s, condKey)
+	var condCreated bool
+	res.ConditionalWrites, condCreated = probeConditional(ctx, s, condKey)
+	if condCreated {
+		created = append(created, condKey)
+	}
 
-	for _, k := range []string{dataKey, condKey} {
+	for _, k := range created {
 		if err := s.Delete(ctx, k); err != nil {
 			return res, fmt.Errorf("delete: %w", err)
 		}
@@ -62,11 +82,12 @@ func Probe(ctx context.Context, s Storage, prefix string) (ProbeResult, error) {
 	return res, nil
 }
 
-// probeConditional is true only when a second If-None-Match:* write is rejected.
-func probeConditional(ctx context.Context, s Storage, key string) bool {
+// probeConditional reports whether a second If-None-Match:* write is rejected
+// and whether it created key (so the caller must clean it up).
+func probeConditional(ctx context.Context, s Storage, key string) (supported, created bool) {
 	if _, err := s.PutIfAbsent(ctx, key, []byte("1")); err != nil {
-		return false
+		return false, false
 	}
 	_, err := s.PutIfAbsent(ctx, key, []byte("2"))
-	return errors.Is(err, ErrPreconditionFailed)
+	return errors.Is(err, ErrPreconditionFailed), true
 }

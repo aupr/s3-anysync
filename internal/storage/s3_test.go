@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aws/smithy-go"
@@ -30,6 +32,40 @@ func TestMapErr(t *testing.T) {
 	}
 	if mapErr(nil) != nil {
 		t.Error("nil must stay nil")
+	}
+}
+
+func TestMapErrKeepsAPIError(t *testing.T) {
+	err := mapErr(&smithy.GenericAPIError{Code: "AccessDenied", Message: "x"})
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "AccessDenied" {
+		t.Fatalf("APIError lost: %v", err)
+	}
+	if !errors.Is(err, ErrAccessDenied) {
+		t.Fatalf("sentinel lost: %v", err)
+	}
+}
+
+func TestMapErrNoSuchBucket(t *testing.T) {
+	err := mapErr(&smithy.GenericAPIError{Code: "NoSuchBucket", Message: "x"})
+	if !errors.Is(err, ErrNoSuchBucket) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPutRejectsBadMetadata(t *testing.T) {
+	s, err := NewS3(S3Config{Endpoint: "http://127.0.0.1:1", Bucket: "b", AccessKeyID: "a", SecretAccessKey: "s", PathStyle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"café", "a\nb"} {
+		_, err := s.Put(context.Background(), "k", nil, map[string]string{"x": v})
+		if err == nil || !strings.Contains(err.Error(), "non-ASCII or control") {
+			t.Errorf("value %q: err = %v", v, err)
+		}
+	}
+	if _, err := s.Put(context.Background(), "k", nil, map[string]string{"bad\x00key": "v"}); err == nil {
+		t.Error("bad key accepted")
 	}
 }
 
