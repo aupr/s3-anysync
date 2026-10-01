@@ -4455,7 +4455,8 @@ func TestPlanTable(t *testing.T) {
 		{"c2l cloud edit", c2l, true, "a", "b", "a", OpDownload},
 		{"c2l local delete restored", c2l, true, "", "a", "a", OpDownload},
 		{"c2l cloud delete propagates", c2l, true, "a", "", "a", OpDeleteLocal},
-		{"c2l cloud delete not propagated", c2l, false, "a", "", "a", OpUpload},
+		{"c2l cloud delete not propagated: receiver never uploads", c2l, false, "a", "", "a", ""},
+		{"c2l cloud delete vs local edit, deletes off: receiver never uploads", c2l, false, "b", "", "a", ""},
 		{"c2l untracked local file left alone", c2l, true, "a", "", "", ""},
 		{"c2l both edited", c2l, true, "b", "c", "a", OpDownload},
 		{"c2l cloud delete vs local edit", c2l, true, "b", "", "a", OpDeleteLocal},
@@ -4611,7 +4612,7 @@ func decide(dir model.Direction, propagate, lok, rok, lc, rc, same bool) (OpKind
 			if propagate {
 				return OpDeleteLocal, true
 			}
-			return OpUpload, true
+			return "", false // receive-only: never write to the cloud
 		default:
 			return OpConflict, true
 		}
@@ -4642,7 +4643,10 @@ func decide(dir model.Direction, propagate, lok, rok, lc, rc, same bool) (OpKind
 		if propagate {
 			return OpDeleteLocal, true
 		}
-		return OpUpload, true
+		if dir == model.CloudToLocal {
+			return "", false // receive-only: never write to the cloud
+		}
+		return OpUpload, true // two-way: restore the cloud copy
 	}
 }
 ```

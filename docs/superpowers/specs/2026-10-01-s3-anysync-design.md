@@ -136,7 +136,7 @@ Each path is compared across local, remote and the baseline. The baseline is sto
 | same | deleted | delete local¹ | upload (restore cloud) | delete local¹ |
 | deleted | deleted | drop from baseline | drop | drop |
 
-¹ When `propagateDeletes` is off, the file is restored from the side that still has it.
+¹ When `propagateDeletes` is off, the file is restored from the side that still has it. Exception (user decision): a `cloud-to-local` machine never writes to the cloud, so when the cloud deleted a file and `propagateDeletes` is off, the local file is simply left alone (no upload).
 
 Paths that are new on one side are treated like "changed vs baseline" with an empty baseline hash.
 
