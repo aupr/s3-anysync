@@ -71,6 +71,14 @@ func runContract(t *testing.T, s storage.Storage, prefix string) {
 		if want := []string{key("l/2") + "/"}; !reflect.DeepEqual(prefixes, want) {
 			t.Fatalf("prefixes = %v, want %v", prefixes, want)
 		}
+		// ListPrefixes on a prefix with no children returns empty
+		noPrefixes, err := s.ListPrefixes(ctx, key("no-such-dir")+"/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(noPrefixes) != 0 {
+			t.Fatalf("ListPrefixes on non-existent prefix = %v, want empty", noPrefixes)
+		}
 	})
 
 	t.Run("copy keeps metadata", func(t *testing.T) {
@@ -89,8 +97,66 @@ func runContract(t *testing.T, s storage.Storage, prefix string) {
 		}
 	})
 
+	t.Run("metadata keys are lowercased", func(t *testing.T) {
+		if _, err := s.Put(ctx, key("m/case"), []byte("data"), map[string]string{"SHA256": "abc", "Machine": "m1"}); err != nil {
+			t.Fatal(err)
+		}
+		_, obj, err := s.Get(ctx, key("m/case"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if obj.Metadata["sha256"] != "abc" || obj.Metadata["machine"] != "m1" {
+			t.Fatalf("metadata keys not lowercased: %v", obj.Metadata)
+		}
+		head, err := s.Head(ctx, key("m/case"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if head.Metadata["sha256"] != "abc" || head.Metadata["machine"] != "m1" {
+			t.Fatalf("head metadata keys not lowercased: %v", head.Metadata)
+		}
+	})
+
+	t.Run("overwrite replaces", func(t *testing.T) {
+		if _, err := s.Put(ctx, key("ow"), []byte("one"), map[string]string{"sha256": "1"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Put(ctx, key("ow"), []byte("two"), map[string]string{"sha256": "2"}); err != nil {
+			t.Fatal(err)
+		}
+		body, obj, err := s.Get(ctx, key("ow"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != "two" || obj.Metadata["sha256"] != "2" {
+			t.Fatalf("overwrite: got body=%q sha256=%q, want body=two sha256=2", body, obj.Metadata["sha256"])
+		}
+	})
+
+	t.Run("zero-byte body", func(t *testing.T) {
+		if _, err := s.Put(ctx, key("empty"), []byte{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		body, _, err := s.Get(ctx, key("empty"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 0 {
+			t.Fatalf("get empty body: got len %d, want 0", len(body))
+		}
+		head, err := s.Head(ctx, key("empty"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if head.Size != 0 {
+			t.Fatalf("head empty size: got %d, want 0", head.Size)
+		}
+	})
+
 	t.Run("delete", func(t *testing.T) {
-		s.Put(ctx, key("d/x"), []byte("x"), nil)
+		if _, err := s.Put(ctx, key("d/x"), []byte("x"), nil); err != nil {
+			t.Fatal(err)
+		}
 		if err := s.Delete(ctx, key("d/x")); err != nil {
 			t.Fatal(err)
 		}
@@ -105,20 +171,38 @@ func runContract(t *testing.T, s storage.Storage, prefix string) {
 	t.Run("conditional writes", func(t *testing.T) {
 		k := key("cond")
 		first, err := s.PutIfAbsent(ctx, k, []byte("1"))
+		if errors.Is(err, storage.ErrConditionalUnsupported) {
+			t.Skip("conditional writes not supported")
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.PutIfAbsent(ctx, k, []byte("2")); !errors.Is(err, storage.ErrPreconditionFailed) {
 			t.Fatalf("second PutIfAbsent: %v", err)
 		}
-		if _, err := s.PutIfMatch(ctx, k, []byte("3"), first.ETag); err != nil {
+		second, err := s.PutIfMatch(ctx, k, []byte("3"), first.ETag)
+		if err != nil {
 			t.Fatalf("PutIfMatch with current etag: %v", err)
+		}
+		// ETag changes on rewrite
+		if second.ETag == "" || second.ETag == first.ETag {
+			t.Fatalf("ETag did not change: first=%q second=%q", first.ETag, second.ETag)
+		}
+		// PutIfMatch with new ETag succeeds
+		if _, err := s.PutIfMatch(ctx, k, []byte("5"), second.ETag); err != nil {
+			t.Fatalf("PutIfMatch with new etag: %v", err)
 		}
 		if _, err := s.PutIfMatch(ctx, k, []byte("4"), first.ETag); !errors.Is(err, storage.ErrPreconditionFailed) {
 			t.Fatalf("PutIfMatch with stale etag: %v", err)
 		}
-		if body, _, _ := s.Get(ctx, k); string(body) != "3" {
+		if body, _, _ := s.Get(ctx, k); string(body) != "5" {
 			t.Fatalf("body = %q", body)
+		}
+		// PutIfMatch on missing key should return error
+		if _, err := s.PutIfMatch(ctx, key("cond-missing"), []byte("x"), "\"abc\""); err == nil {
+			t.Fatal("PutIfMatch on missing key should return error")
+		} else if !errors.Is(err, storage.ErrPreconditionFailed) && !errors.Is(err, storage.ErrNotFound) {
+			t.Fatalf("PutIfMatch on missing key: got %v, want ErrPreconditionFailed or ErrNotFound", err)
 		}
 	})
 }
