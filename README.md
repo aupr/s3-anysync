@@ -15,8 +15,8 @@ Plan 1 is done: the sync engine and a debug command line. The background agent (
 - **Direction**: each machine has its own direction per action: `two-way`, `local-to-cloud` or `cloud-to-local`. The action has a default; `action direction ACTION_ID <dir>` overrides it for this machine (`default` clears the override).
 - **Deletes**: by default deletes propagate. `--no-propagate-deletes` stops that; one-way modes never delete a file on the destination that was never synced. With `--receiver-restores-cloud`, a cloud-to-local machine uploads a file back that the cloud deleted (default: it never uploads).
 - **Encrypted actions**: `action create --encrypt` encrypts file contents with AES-256-GCM. The passphrase is read from `S3_ANYSYNC_PASSPHRASE` (also for `action join`) and is kept in the keychain.
-- **Conflicts**: when both sides changed a file, `sync` reports `conflict: <path>` and leaves both copies alone. `resolve` needs a choice for every conflict: either `--all local|cloud` or one `--path P=local|cloud` per conflicting path.
-- **Snapshots and restore**: `snapshot` stores a point-in-time copy of the action in the bucket (a `pre-resolve` snapshot is taken before resolving). `snapshots` lists them; `restore --to local|cloud|both [--path P]... ACTION_ID TS` restores from one.
+- **Conflicts**: when both sides changed a file, `sync` reports `conflict: <path>` and leaves both copies alone and pauses the whole action: non-conflicting changes wait too until the conflicts are resolved. `resolve` needs a choice for every conflict: either `--all local|cloud` or one `--path P=local|cloud` per conflicting path.
+- **Snapshots and restore**: `snapshot` stores a point-in-time copy of the action in the bucket (a `pre-resolve` snapshot is taken before resolving only when the resolution overwrites or deletes cloud files; local files that lose are copied to `<data dir>/local-backups/<actionId>/<ts>/`, newest 20 kept). Every sync that overwrites or deletes cloud files also takes an `auto-pre-sync` snapshot; these count toward the snapshot retention (default 20) and can age out older snapshots. `snapshots` lists them; `restore --to local|cloud|both [--path P]... ACTION_ID TS` restores from one.
 - **Data dir**: machine id, state and baseline live in `os.UserConfigDir()/s3-anysync`. Set `S3_ANYSYNC_DATA_DIR` to use another folder, which is how you simulate two machines on one computer.
 
 ## Build
@@ -77,7 +77,11 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 ## Known limitations of Plan 1
 
 - No background agent or GUI yet: syncs run only when you invoke the CLI.
-- No mass-delete guard: if a synced folder is emptied locally, the deletes propagate (unless `--no-propagate-deletes`).
+- No mass-delete threshold yet: if a synced folder is emptied locally (but still exists), the deletes propagate (unless `--no-propagate-deletes`). A missing, renamed or unmounted item folder is different: it is refused with an error (see `ErrRootMissing`) instead of deleting.
+- Two processes using the same data dir are not mutually excluded (the machine id is shared); do not run two syncs of the same data dir at once.
+- `restore --to cloud` on a local-to-cloud machine is undone by that machine's next sync.
+- After a lost lock, other machines' syncs may fail until the original machine syncs again.
+- Re-pointing an item while a sync is running can race; do it when idle.
 - Whole files are held in memory while hashing, encrypting and transferring; large files are not supported.
 - The remote lock is renewed over the network; a long stall can let it expire and another machine take it.
 - Restore to local writes the snapshot's files into the mapped local paths (backing up what it overwrites); it is not an exact rollback and does not remove local files that are absent from the snapshot.

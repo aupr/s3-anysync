@@ -80,7 +80,7 @@ An item with no entry for the current machine is skipped on that machine, and th
 
 ```
 <rootPrefix>/<actionId>/.meta/action.json     action + items + every machine's paths and names; no secrets
-<rootPrefix>/<actionId>/.meta/manifest.json   cloud state: path → {hash, size, mtime, etag, writerMachineId}
+<rootPrefix>/<actionId>/.meta/manifest.json   cloud state: path → {hash, size, mtime, etag, writer}
 <rootPrefix>/<actionId>/.meta/lock            run lock: {machineId, expiresAt}
 <rootPrefix>/<actionId>/.meta/keycheck        encrypted actions only: a known string encrypted with the passphrase
 <rootPrefix>/<actionId>/current/<remoteName>…  live files
@@ -151,6 +151,8 @@ One-way modes never produce a conflict: the source side always wins. In `local-t
 
 **Symlinks.** Symlinks to files are followed. Symlinked directories are not descended into. Other special files are skipped.
 
+**Missing item root.** If a directory item's root (or a file item's parent folder) does not exist but content under it was synced before, the sync is refused with `ErrRootMissing` rather than treated as a mass deletion (unmounted volume, renamed folder). A missing file whose parent folder exists is a normal deletion. If the folder was removed on purpose, unmap the item and map it again.
+
 **Unmapped or removed items.** Only paths that belong to an item mapped on this machine, and are not excluded, take part in planning. Removing a mapping therefore never deletes anything in the cloud.
 
 ### 6.3 Snapshot guard
@@ -162,7 +164,7 @@ Before executing, if the plan:
 1. Acquire the lock.
 2. Re-read the ETag of `manifest.json`. If it changed since the scan, release the lock and re-plan (at most 3 times).
 3. Apply the plan:
-   - **Upload:** PUT with metadata `sha256`, `mtime`, `machineId`.
+   - **Upload:** PUT with metadata `sha256`, `mtime`, `machine`.
    - **Download:** write to a temp file in the target directory, then rename it atomically into place and set its mtime.
    - **Delete.**
 4. Commit (6.5), then release the lock.
@@ -216,7 +218,7 @@ any ──user pause──▶ Paused(user) ──resume──▶ Idle
   - Pause all / Resume all
   - one submenu per action: Sync now, Snapshot now, Pause/Resume, plus its status line
   - Quit
-- **State store:** SQLite at `<appdata>/state.db`. Tables: profiles, actions (a local cache of `action.json` plus `profileId`), items, baselines, history, conflicts, settings.
+- **State store:** SQLite at `<appdata>/state.db`. Tables: profiles, actions (a local cache of `action.json` plus `profileId`; items are stored inside the action JSON, not in a separate table), baselines, history, conflicts, settings.
 - **Logs:** JSON `slog` output to `<appdata>/logs/agent-YYYY-MM-DD.log`, kept 7 days.
 
 ## 8. IPC
