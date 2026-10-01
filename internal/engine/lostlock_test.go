@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/niceit/s3-anysync/internal/model"
@@ -52,9 +53,12 @@ func TestApplySkipsManifestAndBaselineWhenLockIsLost(t *testing.T) {
 	ops := []Op{{Path: "settings.json", Kind: OpUpload, Local: &entry}, {Path: "zzz-never-uploaded.json", Kind: OpDeleteRemote}}
 	manifest := model.Manifest{Files: map[string]model.FileEntry{}}
 
-	_, err = r.apply(lockCtx, ms, ops, map[string]model.FileEntry{}, map[string]model.FileEntry{}, &manifest)
+	_, err = r.apply(lockCtx, ms, ops, map[string]model.FileEntry{}, &manifest)
 	if !errors.Is(err, storage.ErrLockLost) {
 		t.Fatalf("want ErrLockLost, got %v", err)
+	}
+	if n := strings.Count(err.Error(), storage.ErrLockLost.Error()); n != 1 {
+		t.Fatalf("ErrLockLost text repeated %d times: %v", n, err)
 	}
 	if _, err := mem.Head(context.Background(), l.Manifest()); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("manifest was written although the lock was lost (err=%v)", err)
@@ -72,7 +76,7 @@ func TestApplyReportsLockLostCauseBeforeAnyCloudWrite(t *testing.T) {
 	d := memDeps(mem, "A")
 	d.Repo = newDB(t)
 	r := NewRunner(d, "cfg", a)
-	_, err := r.apply(lockCtx, nil, []Op{{Path: "x", Kind: OpDeleteRemote}}, map[string]model.FileEntry{}, map[string]model.FileEntry{}, &model.Manifest{Files: map[string]model.FileEntry{}})
+	_, err := r.apply(lockCtx, nil, []Op{{Path: "x", Kind: OpDeleteRemote}}, map[string]model.FileEntry{}, &model.Manifest{Files: map[string]model.FileEntry{}})
 	if !errors.Is(err, storage.ErrLockLost) {
 		t.Fatalf("want ErrLockLost, got %v", err)
 	}

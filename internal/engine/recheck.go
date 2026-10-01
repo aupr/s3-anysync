@@ -29,6 +29,12 @@ func checkLocal(abs string, seen *model.FileEntry) localState {
 		if absent {
 			return localSame
 		}
+		// A dangling symlink holds no file: the write goes through the link.
+		if lerr == nil {
+			if _, err := os.Stat(abs); errors.Is(err, fs.ErrNotExist) {
+				return localSame
+			}
+		}
 		return localChanged
 	}
 	if absent {

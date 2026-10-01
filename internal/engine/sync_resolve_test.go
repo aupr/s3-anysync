@@ -63,7 +63,10 @@ func init() {
 	scenarios["resolve local deleted, cloud edited: cloud wins"] = func(t *testing.T, f storeFactory) { resolveDeleteEdit(t, f, model.SideCloud) }
 	scenarios["resolve rejects partial and unknown choices"] = scenarioResolveStrict
 	scenarios["resolve keeps every conflict when a new one appears"] = scenarioResolveNewConflict
-	scenarios["unmapping an item keeps its baseline"] = scenarioUnmapKeepsBaseline
+	scenarios["unmapping an item drops its baseline"] = scenarioUnmapDropsBaseline
+	scenarios["remap after local cleanup downloads, never deletes"] = scenarioRemapAfterLocalCleanup
+	scenarios["remap after a cloud edit follows first-run rules"] = scenarioRemapAfterCloudEdit
+	scenarios["resolve ignores content the user never reviewed"] = scenarioResolveIgnoresUnreviewedContent
 }
 
 func cloudBody(t *testing.T, h *harness, act model.Action, p string) (string, error) {
@@ -349,12 +352,13 @@ func scenarioResolveNewConflict(t *testing.T, f storeFactory) {
 	expectCounts(t, res, 2, 0, 0, 0)
 }
 
-func scenarioUnmapKeepsBaseline(t *testing.T, f storeFactory) {
-	h, a, b, act := syncedPair(t, f, testAction("unmapbase"))
-	un, err := UpdateSharedAction(ctx, b.deps, h.root, act.ID, func(a *model.Action) error {
+// unmapSnippets removes the snippets mapping of machine m.
+func unmapSnippets(t *testing.T, h *harness, m *machine, actionID string) {
+	t.Helper()
+	un, err := UpdateSharedAction(ctx, m.deps, h.root, actionID, func(a *model.Action) error {
 		for i := range a.Items {
 			if a.Items[i].ID == itemSnippets {
-				delete(a.Items[i].LocalPaths, b.id)
+				delete(a.Items[i].LocalPaths, m.id)
 			}
 		}
 		return nil
@@ -362,28 +366,119 @@ func scenarioUnmapKeepsBaseline(t *testing.T, f storeFactory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.attach(un)
+	m.attach(un)
+}
+
+func scenarioUnmapDropsBaseline(t *testing.T, f storeFactory) {
+	h, _, b, act := syncedPair(t, f, testAction("unmapbase"))
+	unmapSnippets(t, h, b, act.ID)
 	expectCounts(t, b.sync(), 0, 0, 0, 0)
 	base, err := b.deps.Repo.LoadBaseline(act.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := base["snippets/go.json"]; !ok {
-		t.Fatalf("baseline of the unmapped item was wiped: %+v", base)
+	if _, ok := base["snippets/go.json"]; ok {
+		t.Fatalf("baseline still holds the unmapped item: %+v", base)
 	}
+	if _, ok := base["settings.json"]; !ok {
+		t.Fatalf("baseline of the mapped item lost: %+v", base)
+	}
+}
 
+func scenarioRemapAfterLocalCleanup(t *testing.T, f storeFactory) {
+	h, a, b, act := syncedPair(t, f, testAction("remapclean"))
+	unmapSnippets(t, h, b, act.ID)
+	expectCounts(t, b.sync(), 0, 0, 0, 0)
+	if err := os.RemoveAll(b.path("app/snippets")); err != nil {
+		t.Fatal(err)
+	}
+	h.join(b, act.ID, map[string]string{itemSnippets: defaultPaths[itemSnippets]})
+	expectCounts(t, b.sync(), 0, 1, 0, 0)
+	if got := b.read("app/snippets/go.json"); got != "go" {
+		t.Fatalf("local = %q", got)
+	}
+	if got, err := cloudBody(t, h, act, "snippets/go.json"); err != nil || got != "go" {
+		t.Fatalf("cloud copy = %q, %v", got, err)
+	}
+	expectCounts(t, a.sync(), 0, 0, 0, 0)
+	if got := a.read("app/snippets/go.json"); got != "go" {
+		t.Fatalf("A lost the file: %q", got)
+	}
+}
+
+func scenarioRemapAfterCloudEdit(t *testing.T, f storeFactory) {
+	h, a, b, act := syncedPair(t, f, testAction("remapedit"))
+	unmapSnippets(t, h, b, act.ID)
+	expectCounts(t, b.sync(), 0, 0, 0, 0)
 	a.write("app/snippets/go.json", "go2")
 	expectCounts(t, a.sync(), 1, 0, 0, 0)
 	h.join(b, act.ID, map[string]string{itemSnippets: defaultPaths[itemSnippets]})
+	// first-run rules: the local copy differs from the cloud one, so it is a conflict
 	res := b.sync()
-	if res.Outcome != model.OutcomeOK {
-		t.Fatalf("remap: %+v", res)
+	if res.Outcome != model.OutcomeConflict || len(res.Conflicts) != 1 || res.Conflicts[0].Path != "snippets/go.json" {
+		t.Fatalf("want a conflict on snippets/go.json, got %+v", res)
 	}
-	expectCounts(t, res, 0, 1, 0, 0)
-	if got := b.read("app/snippets/go.json"); got != "go2" {
-		t.Fatalf("local = %q", got)
+	if got := b.read("app/snippets/go.json"); got != "go" {
+		t.Fatalf("local changed: %q", got)
 	}
-	expectCounts(t, b.sync(), 0, 0, 0, 0)
+	if got, err := cloudBody(t, h, act, "snippets/go.json"); err != nil || got != "go2" {
+		t.Fatalf("cloud = %q, %v", got, err)
+	}
+}
+
+func scenarioResolveIgnoresUnreviewedContent(t *testing.T, f storeFactory) {
+	h, a, b, act := conflictOnSettings(t, f)
+	// the cloud copy changes again before the user decides
+	a.write("app/settings.json", `{"v":3}`)
+	expectCounts(t, a.sync(), 1, 0, 0, 0)
+
+	res, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != model.OutcomeConflict || len(res.Conflicts) != 1 {
+		t.Fatalf("want a conflict result, got %+v", res)
+	}
+	if got, _ := cloudBody(t, h, act, "settings.json"); got != `{"v":3}` {
+		t.Fatalf("cloud overwritten with unreviewed content: %q", got)
+	}
+	if got := b.read("app/settings.json"); got != `{"v":333}` {
+		t.Fatalf("local changed: %q", got)
+	}
+	saved, _ := b.runner.Conflicts()
+	if len(saved) != 1 || saved[0].Remote == nil || saved[0].Remote.Hash != hashBytes([]byte(`{"v":3}`)) {
+		t.Fatalf("saved conflict not refreshed: %+v", saved)
+	}
+	res = resolveSettings(t, b, model.SideLocal)
+	expectCounts(t, res, 1, 0, 0, 0)
+	if got, _ := cloudBody(t, h, act, "settings.json"); got != `{"v":333}` {
+		t.Fatalf("cloud = %q", got)
+	}
+}
+
+func TestResolveDeferredKeepsConflictSaved(t *testing.T) {
+	hs := &hookStore{Storage: storage.NewMemory()}
+	h, _, b, act := conflictOnSettings(t, hookFactory(hs))
+	l := NewLayout(h.root, act.ID)
+	hs.onGet = func(key string) {
+		if key == l.Current("settings.json") {
+			b.write("app/settings.json", "edited during resolve")
+		}
+	}
+	res, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideCloud})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Deferred) != 1 || res.Deferred[0] != "settings.json" {
+		t.Fatalf("want settings.json deferred, got %+v", res)
+	}
+	if got := b.read("app/settings.json"); got != "edited during resolve" {
+		t.Fatalf("user edit lost: %q", got)
+	}
+	saved, _ := b.runner.Conflicts()
+	if len(saved) != 1 || saved[0].Path != "settings.json" || saved[0].Remote == nil {
+		t.Fatalf("deferred path not kept as a saved conflict: %+v", saved)
+	}
 }
 
 func TestRetryWhenManifestChangesBeforeLock(t *testing.T) {

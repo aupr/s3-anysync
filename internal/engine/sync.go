@@ -21,8 +21,19 @@ func (r *Runner) Sync(ctx context.Context) (model.SyncResult, error) {
 	return r.run(ctx, model.HistorySync, nil)
 }
 
+// resolveReq is a Resolve call: the user's choices and the conflicts (with the
+// content hashes) the user was shown when choosing.
+type resolveReq struct {
+	choices  map[string]model.Side
+	reviewed map[string]model.Conflict
+}
+
 // Resolve settles conflicts (path → winning side) and runs the rest of the
-// sync. The losing side is snapshotted or backed up first.
+// sync. The losing side is snapshotted or backed up first. A choice is applied
+// only if both sides still hold the content the user reviewed; otherwise all
+// conflicts are saved again with the fresh content and nothing is applied.
+// Callers must treat a non-empty result.Deferred as "not fully resolved":
+// deferred conflict paths stay saved as conflicts.
 func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (model.SyncResult, error) {
 	for p, side := range choices {
 		if side != model.SideLocal && side != model.SideCloud {
@@ -59,7 +70,11 @@ func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (mo
 	if len(missing) > 0 {
 		return model.SyncResult{}, fmt.Errorf("choose a side for every conflict; missing: %s", strings.Join(missing, ", "))
 	}
-	return r.run(ctx, model.HistoryResolve, choices)
+	reviewed := make(map[string]model.Conflict, len(saved))
+	for _, c := range saved {
+		reviewed[c.Path] = c
+	}
+	return r.run(ctx, model.HistoryResolve, &resolveReq{choices: choices, reviewed: reviewed})
 }
 
 // Conflicts returns the conflicts saved by the last run.
@@ -67,7 +82,7 @@ func (r *Runner) Conflicts() ([]model.Conflict, error) {
 	return r.d.Repo.LoadConflicts(r.action.ID)
 }
 
-func (r *Runner) run(ctx context.Context, kind string, overrides map[string]model.Side) (res model.SyncResult, err error) {
+func (r *Runner) run(ctx context.Context, kind string, overrides *resolveReq) (res model.SyncResult, err error) {
 	started := r.d.now()
 	defer func() {
 		outcome, msg := res.Outcome, res.Summary()
@@ -96,14 +111,13 @@ func (r *Runner) run(ctx context.Context, kind string, overrides map[string]mode
 
 // syncOnce scans, plans and applies. retry=true means another machine
 // changed the manifest between planning and locking.
-func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string]model.Side) (model.SyncResult, bool, error) {
+func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveReq) (model.SyncResult, bool, error) {
 	id := r.action.ID
 	baseline, err := r.d.Repo.LoadBaseline(id)
 	if err != nil {
 		return model.SyncResult{}, false, fmt.Errorf("load baseline: %w", err)
 	}
-	fullBaseline := baseline
-	baseline = filterOwned(fullBaseline, ms)
+	baseline = filterOwned(baseline, ms)
 	local, err := scanLocal(ms, baseline)
 	if err != nil {
 		return model.SyncResult{}, false, fmt.Errorf("scan local files: %w", err)
@@ -127,7 +141,14 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 			return model.SyncResult{}, false, fmt.Errorf("clear conflicts: %w", err)
 		}
 	}
-	ops, conflicts := applyOverrides(ops, overrides, r.d.now().UTC())
+	now := r.d.now().UTC()
+	conflictOps := map[string]Op{}
+	for _, op := range ops {
+		if op.Kind == OpConflict {
+			conflictOps[op.Path] = op
+		}
+	}
+	ops, conflicts := applyOverrides(ops, overrides, now)
 	if len(conflicts) > 0 {
 		if err := r.d.Repo.SaveConflicts(id, conflicts); err != nil {
 			return model.SyncResult{}, false, fmt.Errorf("save conflicts: %w", err)
@@ -159,12 +180,23 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 		}
 	}
 
-	res, err := r.apply(opCtx, ms, ops, baseline, fullBaseline, &manifest)
+	res, err := r.apply(opCtx, ms, ops, baseline, &manifest)
 	if err != nil {
 		return res, false, err
 	}
-	if err := r.d.Repo.SaveConflicts(id, nil); err != nil {
-		return res, false, fmt.Errorf("clear conflicts: %w", err)
+	// Conflicts whose chosen side could not be applied (the local file changed
+	// meanwhile) stay saved so they keep showing up.
+	var kept []model.Conflict
+	for _, p := range res.Deferred {
+		if op, ok := conflictOps[p]; ok {
+			kept = append(kept, model.Conflict{Path: p, Local: op.Local, Remote: op.Remote, DetectedAt: now})
+		}
+	}
+	if len(kept) == 0 {
+		kept = nil
+	}
+	if err := r.d.Repo.SaveConflicts(id, kept); err != nil {
+		return res, false, fmt.Errorf("save conflicts: %w", err)
 	}
 	res.Outcome = model.OutcomeOK
 	return res, false, nil
@@ -183,7 +215,11 @@ func hasConflict(ops []Op) bool {
 // any conflict is left without a choice, nothing is applied: it returns no
 // ops and ALL current conflicts (chosen or not), so none is silently dropped
 // and the whole action stays paused.
-func applyOverrides(ops []Op, overrides map[string]model.Side, now time.Time) ([]Op, []model.Conflict) {
+func applyOverrides(ops []Op, req *resolveReq, now time.Time) ([]Op, []model.Conflict) {
+	var overrides map[string]model.Side
+	if req != nil {
+		overrides = req.choices
+	}
 	var all []model.Conflict
 	unchosen := false
 	for _, op := range ops {
@@ -193,6 +229,8 @@ func applyOverrides(ops []Op, overrides map[string]model.Side, now time.Time) ([
 		all = append(all, model.Conflict{Path: op.Path, Local: op.Local, Remote: op.Remote, DetectedAt: now})
 		if s := overrides[op.Path]; s != model.SideLocal && s != model.SideCloud {
 			unchosen = true
+		} else if seen, ok := req.reviewed[op.Path]; !ok || hashOf(seen.Local) != hashOf(op.Local) || hashOf(seen.Remote) != hashOf(op.Remote) {
+			unchosen = true // content changed since the user looked
 		}
 	}
 	if unchosen {
@@ -217,6 +255,14 @@ func applyOverrides(ops []Op, overrides map[string]model.Side, now time.Time) ([
 		out = append(out, op)
 	}
 	return out, nil
+}
+
+// hashOf is the content hash of e; "" means deleted.
+func hashOf(e *model.FileEntry) string {
+	if e == nil {
+		return ""
+	}
+	return e.Hash
 }
 
 func hasWrites(ops []Op) bool {
@@ -264,13 +310,13 @@ func (r *Runner) guard(ctx context.Context, ms Mappings, ops []Op, reason string
 
 // apply executes ops in order, then writes the manifest (if the cloud
 // changed) and the new baseline. On a failed op it stops, but still records
-// what was done. baseline is the owned subset used for planning; fullBaseline
-// also holds entries for paths this machine does not currently map, which are
-// carried over untouched.
-func (r *Runner) apply(ctx context.Context, ms Mappings, ops []Op, baseline, fullBaseline map[string]model.FileEntry, manifest *model.Manifest) (model.SyncResult, error) {
+// what was done. baseline is the owned subset used for planning: entries of
+// paths this machine no longer maps are dropped, so remapping them later
+// behaves like a first run instead of reading a missing local file as a delete.
+func (r *Runner) apply(ctx context.Context, ms Mappings, ops []Op, baseline map[string]model.FileEntry, manifest *model.Manifest) (model.SyncResult, error) {
 	var res model.SyncResult
-	next := make(map[string]model.FileEntry, len(fullBaseline))
-	for p, e := range fullBaseline {
+	next := make(map[string]model.FileEntry, len(baseline))
+	for p, e := range baseline {
 		next[p] = e
 	}
 	remoteDirty := false
@@ -342,6 +388,9 @@ loop:
 		if errors.Is(context.Cause(ctx), storage.ErrLockLost) {
 			// Another machine may now be writing the manifest. Keep the old
 			// baseline too; the next run re-plans from what is really there.
+			if errors.Is(opErr, storage.ErrLockLost) {
+				return res, opErr
+			}
 			return res, errors.Join(opErr, storage.ErrLockLost)
 		}
 		manifest.UpdatedAt = r.d.now().UTC()
