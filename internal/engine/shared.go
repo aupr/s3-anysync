@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/niceit/s3-anysync/internal/crypto"
 	"github.com/niceit/s3-anysync/internal/model"
@@ -193,7 +194,7 @@ func UpdateSharedAction(ctx context.Context, d Deps, root, id string, mutate fun
 	if err != nil {
 		return model.Action{}, ctxErr(ctx, err)
 	}
-	origID, origEncrypt := a.ID, a.Encrypt
+	origID, origEncrypt, fetched := a.ID, a.Encrypt, a.UpdatedAt
 	if err := mutate(&a); err != nil {
 		return model.Action{}, ctxErr(ctx, err)
 	}
@@ -203,7 +204,11 @@ func UpdateSharedAction(ctx context.Context, d Deps, root, id string, mutate fun
 	if a.Encrypt != origEncrypt {
 		return model.Action{}, errors.New("encryption cannot be changed after the action is created")
 	}
+	// Strictly after the fetched version even if this clock is behind it.
 	a.UpdatedAt = d.now().UTC()
+	if min := fetched.Add(time.Millisecond); a.UpdatedAt.Before(min) {
+		a.UpdatedAt = min
+	}
 	if err := a.Validate(); err != nil {
 		return model.Action{}, err
 	}

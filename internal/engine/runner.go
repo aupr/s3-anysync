@@ -27,7 +27,8 @@ func (r *Runner) Action() model.Action { return r.action }
 
 // refreshAction picks up rule changes made on other machines and checks the
 // passphrase of encrypted actions. The bucket's definition replaces the local
-// one only when its UpdatedAt is strictly newer; an equal or older remote
+// one whenever its UpdatedAt differs (the bucket is authoritative, so a
+// machine whose clock is ahead cannot mask later edits); an equal UpdatedAt
 // keeps the local copy. The local ProfileID is preserved, and the new
 // definition is persisted when a Repo is configured.
 func (r *Runner) refreshAction(ctx context.Context) error {
@@ -35,7 +36,7 @@ func (r *Runner) refreshAction(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read action definition: %w", err)
 	}
-	if remote.UpdatedAt.After(r.action.UpdatedAt) {
+	if !remote.UpdatedAt.Equal(r.action.UpdatedAt) {
 		remote.ProfileID = r.action.ProfileID
 		if r.d.Repo != nil {
 			if err := r.d.Repo.PutAction(remote); err != nil {

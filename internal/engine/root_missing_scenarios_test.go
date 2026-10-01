@@ -4,6 +4,9 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
+
+	"github.com/niceit/s3-anysync/internal/model"
 )
 
 func init() {
@@ -72,4 +75,29 @@ func scenarioFileParentMissing(t *testing.T, f storeFactory) {
 	if got := b.read("app/settings.json"); got != `{"v":1}` {
 		t.Fatalf("B lost the file: %q", got)
 	}
+}
+
+func init() {
+	scenarios["rule edit survives editor clock skew"] = scenarioClockSkew
+}
+
+func scenarioClockSkew(t *testing.T, f storeFactory) {
+	h, a, b, act := syncedPair(t, f, testAction("skew"))
+	a.deps.Now = func() time.Time { return time.Now().Add(48 * time.Hour) }
+	h.updateName(a, act.ID, "from-A")
+	// B (normal clock) edits afterwards.
+	h.updateName(b, act.ID, "from-B")
+	a.sync()
+	if got := a.runner.Action().Name; got != "from-B" {
+		t.Fatalf("A kept %q, want B's later edit", got)
+	}
+}
+
+func (h *harness) updateName(m *machine, id, name string) {
+	h.t.Helper()
+	a, err := UpdateSharedAction(ctx, m.deps, h.root, id, func(a *model.Action) error { a.Name = name; return nil })
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	m.attach(a)
 }

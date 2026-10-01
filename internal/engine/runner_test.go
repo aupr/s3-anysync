@@ -35,11 +35,12 @@ func TestRefreshAction(t *testing.T) {
 		t.Fatalf("equal: %v %+v", err, r.Action())
 	}
 
-	// Older remote ignored.
+	// The bucket is authoritative: a remote that differs is taken even when
+	// its UpdatedAt is older than the local one (clock skew on an editor).
 	local.UpdatedAt = remote.UpdatedAt.Add(time.Hour)
 	r = NewRunner(d, "root", local)
-	if err := r.refreshAction(ctx); err != nil || r.Action().Name != "local-name" {
-		t.Fatalf("older: %v", err)
+	if err := r.refreshAction(ctx); err != nil || r.Action().Name != "ra" {
+		t.Fatalf("older remote not taken: %v %+v", err, r.Action())
 	}
 
 	// Newer remote stored and returned, ProfileID kept.
