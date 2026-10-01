@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/niceit/s3-anysync/internal/model"
 )
@@ -21,6 +22,9 @@ import (
 func scanLocal(ms Mappings, baseline map[string]model.FileEntry) (map[string]model.FileEntry, error) {
 	out := map[string]model.FileEntry{}
 	for _, m := range ms {
+		if m.matcher == nil {
+			return nil, fmt.Errorf("scan: item %s has no exclude matcher", m.RemoteName)
+		}
 		var err error
 		if m.Type == model.ItemFile {
 			err = scanFile(m, baseline, out)
@@ -34,18 +38,43 @@ func scanLocal(ms Mappings, baseline map[string]model.FileEntry) (map[string]mod
 	return out, nil
 }
 
+func refuseDeleted(p string) error {
+	return fmt.Errorf("scan: %s is a dangling symlink (or special file) but was synced before; refusing to treat it as deleted", p)
+}
+
+func hasBaselineUnder(baseline map[string]model.FileEntry, remoteName string) bool {
+	for k := range baseline {
+		if strings.HasPrefix(k, remoteName+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func scanFile(m Mapping, baseline, out map[string]model.FileEntry) error {
+	if m.matcher.Match(path.Base(m.RemoteName)) {
+		return nil
+	}
+	if _, err := os.Lstat(m.LocalPath); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	info, err := os.Stat(m.LocalPath)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) { // dangling symlink
+		if _, ok := baseline[m.RemoteName]; ok {
+			return refuseDeleted(m.LocalPath)
+		}
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("scan: stat %s: %w", m.LocalPath, err)
 	}
 	if info.IsDir() {
 		return fmt.Errorf("item %s expects a file but %s is a directory", m.RemoteName, m.LocalPath)
 	}
-	if !info.Mode().IsRegular() || m.matcher.Match(path.Base(m.RemoteName)) {
+	if !info.Mode().IsRegular() {
+		if _, ok := baseline[m.RemoteName]; ok {
+			return refuseDeleted(m.LocalPath)
+		}
 		return nil
 	}
 	e, err := entryFor(m.RemoteName, m.LocalPath, info, baseline)
@@ -57,24 +86,42 @@ func scanFile(m Mapping, baseline, out map[string]model.FileEntry) error {
 }
 
 func scanDir(m Mapping, baseline, out map[string]model.FileEntry) error {
-	info, err := os.Stat(m.LocalPath)
+	root := m.LocalPath
+	li, err := os.Lstat(root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("scan: stat %s: %w", root, err)
+	}
+	if li.Mode()&fs.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			if hasBaselineUnder(baseline, m.RemoteName) {
+				return fmt.Errorf("scan: item %s: cannot resolve symlink %s but items were synced before; refusing to treat as deleted: %w", m.RemoteName, root, err)
+			}
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("scan: resolve %s: %w", root, err)
+		}
+		root = resolved
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("scan: stat %s: %w", root, err)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("item %s expects a directory but %s is a file", m.RemoteName, m.LocalPath)
 	}
-	return filepath.WalkDir(m.LocalPath, func(p string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if p == m.LocalPath {
+		if p == root {
 			return nil
 		}
-		rel, err := filepath.Rel(m.LocalPath, p)
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
@@ -88,17 +135,23 @@ func scanDir(m Mapping, baseline, out map[string]model.FileEntry) error {
 		if m.matcher.Match(rel) {
 			return nil
 		}
-		info, err := os.Stat(p) // follows symlinks
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil // dangling symlink
-		}
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
+		key := m.RemoteName + "/" + rel
+		info, err := os.Stat(p)             // follows symlinks
+		if errors.Is(err, fs.ErrNotExist) { // dangling symlink
+			if _, ok := baseline[key]; ok {
+				return refuseDeleted(p)
+			}
 			return nil
 		}
-		key := m.RemoteName + "/" + rel
+		if err != nil {
+			return fmt.Errorf("scan: stat %s: %w", p, err)
+		}
+		if !info.Mode().IsRegular() {
+			if _, ok := baseline[key]; ok {
+				return refuseDeleted(p)
+			}
+			return nil
+		}
 		e, err := entryFor(key, p, info, baseline)
 		if err != nil {
 			return err
