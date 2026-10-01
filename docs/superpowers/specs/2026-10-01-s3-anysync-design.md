@@ -60,6 +60,7 @@ On first run the agent generates a `machineId` (a UUID) and a default friendly n
 | `triggers.schedule` | none, preset (every N minutes or hours, daily at HH:MM, weekly on a day at HH:MM) or raw cron |
 | `triggers.remotePollMinutes` | default 5; used when `onChange` is on and no schedule is set |
 | `propagateDeletes` | bool, default true |
+| `receiverRestoresCloud` | bool, default false. Only matters when `propagateDeletes` is off: if the cloud deleted a file that a `cloud-to-local` machine still has, false leaves the local file alone (a receive-only machine never uploads); true uploads it back |
 | `encrypt` | bool, fixed when the action is created; the passphrase is in the keychain under the action id |
 | `excludes` | glob patterns applied to every item |
 | `snapshotRetention` | keep the newest N snapshots (default 20) |
@@ -136,7 +137,7 @@ Each path is compared across local, remote and the baseline. The baseline is sto
 | same | deleted | delete local¹ | upload (restore cloud) | delete local¹ |
 | deleted | deleted | drop from baseline | drop | drop |
 
-¹ When `propagateDeletes` is off, the file is restored from the side that still has it. Exception (user decision): a `cloud-to-local` machine never writes to the cloud, so when the cloud deleted a file and `propagateDeletes` is off, the local file is simply left alone (no upload).
+¹ When `propagateDeletes` is off, the file is restored from the side that still has it. Exception (user decision): by default a `cloud-to-local` machine never writes to the cloud, so when the cloud deleted a file and `propagateDeletes` is off, the local file is left alone (no upload). The action switch `receiverRestoresCloud` turns this off: the machine then uploads the file back.
 
 Paths that are new on one side are treated like "changed vs baseline" with an empty baseline hash.
 

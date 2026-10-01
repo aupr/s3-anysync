@@ -5771,6 +5771,7 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides map[string
 
 	ops := Plan(PlanInput{
 		Direction: r.action.DirectionFor(r.d.MachineID), PropagateDeletes: r.action.PropagateDeletes,
+		ReceiverRestoresCloud: r.action.ReceiverRestoresCloud,
 		Local: local, Remote: remote, Baseline: baseline,
 	})
 	ops, conflicts := applyOverrides(ops, overrides, r.d.now().UTC())
@@ -7258,7 +7259,7 @@ Flags always come before arguments.
               (secret key from S3_ANYSYNC_SECRET)
   profile list
   profile test PROFILE_ID
-  action create --profile ID --name N [--direction D] [--no-propagate-deletes] [--encrypt] [--exclude GLOB]... [--retention N]
+  action create --profile ID --name N [--direction D] [--no-propagate-deletes] [--receiver-restores-cloud] [--encrypt] [--exclude GLOB]... [--retention N]
               (passphrase from S3_ANYSYNC_PASSPHRASE when --encrypt)
   action list
   action discover --profile ID
@@ -7430,6 +7431,7 @@ func (c *cli) action(ctx context.Context, args []string) error {
 		fs.StringVar(&a.Name, "name", "", "action name")
 		dir := fs.String("direction", string(model.TwoWay), "default direction")
 		noDel := fs.Bool("no-propagate-deletes", false, "never delete on the other side")
+		fs.BoolVar(&a.ReceiverRestoresCloud, "receiver-restores-cloud", false, "with --no-propagate-deletes: a cloud-to-local machine uploads a file back that the cloud deleted (default: it never uploads)")
 		fs.BoolVar(&a.Encrypt, "encrypt", false, "encrypt files")
 		var excludes multiFlag
 		fs.Var(&excludes, "exclude", "exclude glob (repeatable)")
