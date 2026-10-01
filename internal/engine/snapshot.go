@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,14 @@ import (
 )
 
 const snapshotTSLayout = "20060102T150405Z"
+
+// snapshotCleanupTimeout bounds the best-effort cleanup of a failed snapshot.
+const snapshotCleanupTimeout = 15 * time.Second
+
+var snapshotTSRe = regexp.MustCompile(`^\d{8}T\d{6}Z$`)
+
+// errCorruptIndex marks a snapshot index that exists but cannot be parsed.
+var errCorruptIndex = errors.New("corrupt snapshot index")
 
 // Snapshot reasons recorded in the index.
 const (
@@ -41,7 +50,11 @@ func (r *Runner) newSnapshotTS(ctx context.Context) (string, error) {
 }
 
 // writeSnapshot copies the given current/ files server-side into a new
-// snapshot and writes its index. The caller must hold the action lock.
+// snapshot and writes its index. ctx must be the context held under the
+// action lock: the caller is responsible for holding the lock for the whole
+// call, because retention and failure cleanup assume no concurrent snapshotter.
+// If any step fails, everything already written for this snapshot is removed
+// (best effort, even when ctx was cancelled) and the original error returned.
 func (r *Runner) writeSnapshot(ctx context.Context, reason string, files []model.FileEntry) (model.SnapshotInfo, error) {
 	ts, err := r.newSnapshotTS(ctx)
 	if err != nil {
@@ -49,23 +62,37 @@ func (r *Runner) writeSnapshot(ctx context.Context, reason string, files []model
 	}
 	files = append([]model.FileEntry(nil), files...)
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	fail := func(err error) (model.SnapshotInfo, error) {
+		r.cleanupSnapshot(ctx, ts)
+		return model.SnapshotInfo{}, err
+	}
 	for _, f := range files {
 		if _, err := r.d.Storage.Copy(ctx, r.layout.Current(f.Path), r.layout.SnapshotFile(ts, f.Path)); err != nil {
-			return model.SnapshotInfo{}, fmt.Errorf("snapshot %s: %w", f.Path, err)
+			return fail(fmt.Errorf("snapshot %s: %w", f.Path, err))
 		}
 	}
 	info := model.SnapshotInfo{TS: ts, Reason: reason, MachineID: r.d.MachineID, CreatedAt: r.d.now().UTC(), Files: files}
 	data, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
-		return model.SnapshotInfo{}, err
+		return fail(err)
 	}
 	if _, err := r.d.Storage.Put(ctx, r.layout.SnapshotIndex(ts), data, nil); err != nil {
-		return model.SnapshotInfo{}, err
+		return fail(err)
 	}
 	if err := r.applyRetention(ctx); err != nil {
 		r.d.log().Warn("snapshot retention", "action", r.action.ID, "err", err)
 	}
 	return info, nil
+}
+
+// cleanupSnapshot best-effort removes a partially written snapshot, ignoring
+// cancellation of ctx.
+func (r *Runner) cleanupSnapshot(ctx context.Context, ts string) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotCleanupTimeout)
+	defer cancel()
+	if err := r.deleteSnapshot(cctx, ts); err != nil {
+		r.d.log().Warn("cleanup failed snapshot", "action", r.action.ID, "ts", ts, "err", err)
+	}
 }
 
 // ListSnapshots returns the action's snapshots, newest first.
@@ -82,9 +109,12 @@ func (r *Runner) ListSnapshots(ctx context.Context) ([]model.SnapshotInfo, error
 			continue
 		}
 		info, err := r.snapshotInfo(ctx, strings.TrimSuffix(rest, ".json"))
-		if err != nil {
+		if errors.Is(err, errCorruptIndex) || errors.Is(err, storage.ErrNotFound) {
 			r.d.log().Warn("skip unreadable snapshot index", "key", o.Key, "err", err)
 			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, info)
 	}
@@ -95,30 +125,64 @@ func (r *Runner) ListSnapshots(ctx context.Context) ([]model.SnapshotInfo, error
 func (r *Runner) snapshotInfo(ctx context.Context, ts string) (model.SnapshotInfo, error) {
 	data, _, err := r.d.Storage.Get(ctx, r.layout.SnapshotIndex(ts))
 	if errors.Is(err, storage.ErrNotFound) {
-		return model.SnapshotInfo{}, fmt.Errorf("snapshot %s not found", ts)
+		return model.SnapshotInfo{}, fmt.Errorf("snapshot %s not found: %w", ts, storage.ErrNotFound)
 	}
 	if err != nil {
 		return model.SnapshotInfo{}, err
 	}
 	var info model.SnapshotInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		return model.SnapshotInfo{}, fmt.Errorf("snapshot %s: %w", ts, err)
+		return model.SnapshotInfo{}, fmt.Errorf("snapshot %s: %w: %w", ts, errCorruptIndex, err)
 	}
 	return info, nil
 }
 
 // applyRetention deletes the oldest snapshots beyond the action's retention.
+// It works from object keys only, so unreadable indexes neither block pruning
+// nor shrink the keep window. Snapshots with an index count toward the
+// retention (newest first by timestamp); timestamps that have objects but no
+// index are leftovers of crashed snapshots and are always deleted (safe: the
+// caller holds the action lock and its own index is already written).
+// SnapshotRetention < 1 keeps everything.
 func (r *Runner) applyRetention(ctx context.Context) error {
-	snaps, err := r.ListSnapshots(ctx)
+	keep := r.action.SnapshotRetention
+	if keep < 1 {
+		return nil
+	}
+	prefix := r.layout.SnapshotsPrefix()
+	objs, err := r.d.Storage.List(ctx, prefix)
 	if err != nil {
 		return err
 	}
-	keep := r.action.SnapshotRetention
-	if keep < 1 || len(snaps) <= keep {
-		return nil
+	indexed := map[string]bool{}
+	hasObjects := map[string]bool{}
+	for _, o := range objs {
+		rest := strings.TrimPrefix(o.Key, prefix)
+		if i := strings.Index(rest, "/"); i >= 0 {
+			if ts := rest[:i]; snapshotTSRe.MatchString(ts) {
+				hasObjects[ts] = true
+			}
+		} else if ts, ok := strings.CutSuffix(rest, ".json"); ok && snapshotTSRe.MatchString(ts) {
+			indexed[ts] = true
+		}
 	}
-	for _, s := range snaps[keep:] {
-		if err := r.deleteSnapshot(ctx, s.TS); err != nil {
+	var kept []string
+	for ts := range indexed {
+		kept = append(kept, ts)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(kept)))
+	var doomed []string
+	if len(kept) > keep {
+		doomed = append(doomed, kept[keep:]...)
+	}
+	for ts := range hasObjects {
+		if !indexed[ts] {
+			doomed = append(doomed, ts)
+		}
+	}
+	sort.Strings(doomed)
+	for _, ts := range doomed {
+		if err := r.deleteSnapshot(ctx, ts); err != nil {
 			return err
 		}
 	}
