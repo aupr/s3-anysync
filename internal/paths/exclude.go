@@ -35,10 +35,10 @@ func NewMatcher(lists ...[]string) (*Matcher, error) {
 	for _, list := range lists {
 		for _, raw := range list {
 			p := strings.TrimSpace(raw)
-			// Check if pattern is anchored (starts with "/")
+			// Normalise backslashes first so `\root.txt` is anchored like "/root.txt".
+			p = strings.ReplaceAll(p, `\`, "/")
 			anchored := strings.HasPrefix(p, "/")
-			// Replace backslashes and trim leading/trailing "/"
-			p = strings.Trim(strings.ReplaceAll(p, `\`, "/"), "/")
+			p = strings.Trim(p, "/")
 			if p == "" {
 				continue
 			}

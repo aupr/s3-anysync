@@ -76,3 +76,13 @@ func TestCaretPrefixPattern(t *testing.T) {
 		}
 	}
 }
+
+func TestBackslashAnchoredPattern(t *testing.T) {
+	m, err := NewMatcher([]string{`\root.txt`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Match("root.txt") || m.Match("a/root.txt") {
+		t.Fatal(`\root.txt must be anchored like /root.txt`)
+	}
+}
