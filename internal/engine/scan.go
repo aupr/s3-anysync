@@ -17,8 +17,10 @@ import (
 
 // scanLocal lists every mapped, non-excluded local file keyed by remote path.
 // A file whose size and mtime match its baseline entry reuses the baseline
-// hash. Symlinks to files are followed; symlinked directories and special
-// files are skipped.
+// hash. Symlinks to files are followed. A symlinked directory ROOT of a dir
+// item is followed; symlinks to directories inside a dir item are not followed
+// (skipped, or an error if content under them was synced before), as are
+// special files.
 func scanLocal(ms Mappings, baseline map[string]model.FileEntry) (map[string]model.FileEntry, error) {
 	out := map[string]model.FileEntry{}
 	for _, m := range ms {
@@ -85,6 +87,13 @@ func scanFile(m Mapping, baseline, out map[string]model.FileEntry) error {
 	return nil
 }
 
+func skipOrRefuse(baseline map[string]model.FileEntry, key, p string) error {
+	if _, ok := baseline[key]; ok || hasBaselineUnder(baseline, key) {
+		return refuseDeleted(p)
+	}
+	return nil
+}
+
 func scanDir(m Mapping, baseline, out map[string]model.FileEntry) error {
 	root := m.LocalPath
 	li, err := os.Lstat(root)
@@ -94,7 +103,7 @@ func scanDir(m Mapping, baseline, out map[string]model.FileEntry) error {
 	if err != nil {
 		return fmt.Errorf("scan: stat %s: %w", root, err)
 	}
-	if li.Mode()&fs.ModeSymlink != 0 {
+	if !li.IsDir() { // symlink, or Windows junction/reparse point (ModeIrregular)
 		resolved, err := filepath.EvalSymlinks(root)
 		if err != nil {
 			if hasBaselineUnder(baseline, m.RemoteName) {
@@ -138,19 +147,13 @@ func scanDir(m Mapping, baseline, out map[string]model.FileEntry) error {
 		key := m.RemoteName + "/" + rel
 		info, err := os.Stat(p)             // follows symlinks
 		if errors.Is(err, fs.ErrNotExist) { // dangling symlink
-			if _, ok := baseline[key]; ok {
-				return refuseDeleted(p)
-			}
-			return nil
+			return skipOrRefuse(baseline, key, p)
 		}
 		if err != nil {
 			return fmt.Errorf("scan: stat %s: %w", p, err)
 		}
 		if !info.Mode().IsRegular() {
-			if _, ok := baseline[key]; ok {
-				return refuseDeleted(p)
-			}
-			return nil
+			return skipOrRefuse(baseline, key, p)
 		}
 		e, err := entryFor(key, p, info, baseline)
 		if err != nil {

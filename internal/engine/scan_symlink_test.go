@@ -170,3 +170,34 @@ func TestScanExcludedSubdirNotListed(t *testing.T) {
 		t.Fatalf("keys = %v", keys(got))
 	}
 }
+
+func TestScanSymlinkedSubdirWithBaselineRefuses(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.json"), "a")
+	target := t.TempDir()
+	writeFile(t, filepath.Join(target, "x.json"), "x")
+	symlinkOrSkip(t, target, filepath.Join(dir, "sub"))
+	ms := dirMapping(t, dir)
+	_, err := scanLocal(ms, map[string]model.FileEntry{"snippets/sub/x.json": {Path: "snippets/sub/x.json", Hash: "h"}})
+	if err == nil || !strings.Contains(err.Error(), "sub") || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("want refusal naming sub, got %v", err)
+	}
+}
+
+func TestScanSymlinkedSubdirWithoutBaselineSkipped(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.json"), "a")
+	target := t.TempDir()
+	writeFile(t, filepath.Join(target, "x.json"), "x")
+	symlinkOrSkip(t, target, filepath.Join(dir, "sub"))
+	got, err := scanLocal(dirMapping(t, dir), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"snippets/a.json"}; !reflect.DeepEqual(keys(got), want) {
+		t.Fatalf("keys = %v", keys(got))
+	}
+}
+
+// NOTE: a Windows junction/reparse point root reports ModeIrregular (Go >= 1.23)
+// and cannot be exercised here; scanDir resolves any root where !Lstat.IsDir().

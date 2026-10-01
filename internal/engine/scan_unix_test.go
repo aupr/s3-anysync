@@ -1,11 +1,10 @@
-//go:build !windows
+//go:build unix
 
 package engine
 
 import (
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,9 +13,6 @@ import (
 )
 
 func TestScanFIFO(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip()
-	}
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.json"), "a")
 	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0o644); err != nil {
