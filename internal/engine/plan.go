@@ -33,9 +33,12 @@ type Op struct {
 type PlanInput struct {
 	Direction        model.Direction
 	PropagateDeletes bool
-	Local            map[string]model.FileEntry
-	Remote           map[string]model.FileEntry
-	Baseline         map[string]model.FileEntry
+	// ReceiverRestoresCloud lets a cloud-to-local machine upload its local copy
+	// of a file the cloud deleted while PropagateDeletes is off.
+	ReceiverRestoresCloud bool
+	Local                 map[string]model.FileEntry
+	Remote                map[string]model.FileEntry
+	Baseline              map[string]model.FileEntry
 }
 
 // Plan compares local, remote and baseline and returns one op per path that
@@ -60,7 +63,7 @@ func Plan(in PlanInput) []Op {
 		b, bok := in.Baseline[p]
 		lc := changed(lok, l, bok, b)
 		rc := changed(rok, r, bok, b)
-		kind, ok := decide(in.Direction, in.PropagateDeletes, lok, rok, lc, rc, lok && rok && l.Hash == r.Hash)
+		kind, ok := decide(in.Direction, in.PropagateDeletes, in.ReceiverRestoresCloud, lok, rok, lc, rc, lok && rok && l.Hash == r.Hash)
 		if !ok {
 			continue
 		}
@@ -84,7 +87,7 @@ func changed(ok bool, e model.FileEntry, bok bool, b model.FileEntry) bool {
 }
 
 // decide maps the change matrix to an op. ok=false means leave the path alone.
-func decide(dir model.Direction, propagate, lok, rok, lc, rc, same bool) (OpKind, bool) {
+func decide(dir model.Direction, propagate, restore, lok, rok, lc, rc, same bool) (OpKind, bool) {
 	switch {
 	case !lc && !rc:
 		return OpKeep, true
@@ -110,6 +113,9 @@ func decide(dir model.Direction, propagate, lok, rok, lc, rc, same bool) (OpKind
 			}
 			if propagate {
 				return OpDeleteLocal, true
+			}
+			if restore {
+				return OpUpload, true
 			}
 			return "", false // receive-only: never write to the cloud
 		default:
@@ -143,6 +149,9 @@ func decide(dir model.Direction, propagate, lok, rok, lc, rc, same bool) (OpKind
 			return OpDeleteLocal, true
 		}
 		if dir == model.CloudToLocal {
+			if restore {
+				return OpUpload, true
+			}
 			return "", false // receive-only: never write to the cloud
 		}
 		return OpUpload, true // two-way: restore the cloud copy

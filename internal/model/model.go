@@ -102,12 +102,16 @@ type Action struct {
 	MachineDirections map[string]Direction `json:"machineDirections"`
 	Triggers          Triggers             `json:"triggers"`
 	PropagateDeletes  bool                 `json:"propagateDeletes"`
-	Encrypt           bool                 `json:"encrypt"`
-	Excludes          []string             `json:"excludes"`
-	SnapshotRetention int                  `json:"snapshotRetention"`
-	Items             []Item               `json:"items"`
-	Machines          map[string]string    `json:"machines"`
-	UpdatedAt         time.Time            `json:"updatedAt"`
+	// ReceiverRestoresCloud: when PropagateDeletes is off and the cloud deleted a
+	// file that a cloud-to-local machine still has, false leaves it alone (such a
+	// machine never writes to the cloud); true uploads the local copy back.
+	ReceiverRestoresCloud bool              `json:"receiverRestoresCloud"`
+	Encrypt               bool              `json:"encrypt"`
+	Excludes              []string          `json:"excludes"`
+	SnapshotRetention     int               `json:"snapshotRetention"`
+	Items                 []Item            `json:"items"`
+	Machines              map[string]string `json:"machines"`
+	UpdatedAt             time.Time         `json:"updatedAt"`
 }
 
 // DirectionFor returns the machine's override, or the action default.

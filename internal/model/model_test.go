@@ -113,3 +113,27 @@ func TestSummary(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestReceiverRestoresCloudJSON(t *testing.T) {
+	a := validAction()
+	a.ApplyDefaults()
+	if a.ReceiverRestoresCloud {
+		t.Fatal("default must be false")
+	}
+	data, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"receiverRestoresCloud":false`) {
+		t.Fatalf("missing field: %s", data)
+	}
+	a.ReceiverRestoresCloud = true
+	data, _ = json.Marshal(a)
+	var back Action
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !back.ReceiverRestoresCloud {
+		t.Fatalf("round trip lost field: %s", data)
+	}
+}
