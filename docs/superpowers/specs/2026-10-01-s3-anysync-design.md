@@ -54,12 +54,13 @@ On first run the agent generates a `machineId` (a UUID) and a default friendly n
 | `id` | UUID; also the remote folder name |
 | `name` | Display name |
 | `profileId` | Local reference to the profile (not shared) |
-| `direction` | `two-way`, `local-to-cloud`, `cloud-to-local` |
+| `direction` | Default direction: `two-way`, `local-to-cloud`, `cloud-to-local` |
+| `machineDirections` | Map from `machineId` to a direction that overrides the default for that machine (for example: work Mac is `local-to-cloud`, home PC is `cloud-to-local`) |
 | `triggers.onChange` | bool; debounce seconds (default 3) |
 | `triggers.schedule` | none, preset (every N minutes or hours, daily at HH:MM, weekly on a day at HH:MM) or raw cron |
 | `triggers.remotePollMinutes` | default 5; used when `onChange` is on and no schedule is set |
 | `propagateDeletes` | bool, default true |
-| `encrypt` | bool; the passphrase is in the keychain under the action id |
+| `encrypt` | bool, fixed when the action is created; the passphrase is in the keychain under the action id |
 | `excludes` | glob patterns applied to every item |
 | `snapshotRetention` | keep the newest N snapshots (default 20) |
 
@@ -80,6 +81,7 @@ An item with no entry for the current machine is skipped on that machine, and th
 <rootPrefix>/<actionId>/.meta/action.json     action + items + every machine's paths and names; no secrets
 <rootPrefix>/<actionId>/.meta/manifest.json   cloud state: path → {hash, size, mtime, etag, writerMachineId}
 <rootPrefix>/<actionId>/.meta/lock            run lock: {machineId, expiresAt}
+<rootPrefix>/<actionId>/.meta/keycheck        encrypted actions only: a known string encrypted with the passphrase
 <rootPrefix>/<actionId>/current/<remoteName>…  live files
 <rootPrefix>/<actionId>/snapshots/<ts>/…        snapshot copies
 <rootPrefix>/<actionId>/snapshots/<ts>.json     snapshot index: {reason, machineId, createdAt, files[]}
@@ -108,7 +110,8 @@ When encryption is on:
 - Every file under `current/` and `snapshots/` is encrypted.
 - `action.json`, `manifest.json` and the snapshot indexes are not encrypted, because they contain only paths, hashes and metadata.
 - The SHA-256 hash of the plaintext is stored in the object's user metadata (`x-amz-meta-sha256`), so files can be compared without decrypting them.
-- Every machine that joins the action must enter the same passphrase. A wrong passphrase (an authentication failure on decrypt) stops the action immediately with no retry.
+- Every machine that joins the action must enter the same passphrase. Join and every run decrypt `.meta/keycheck` first, so a wrong passphrase is rejected before anything is uploaded. A wrong passphrase (an authentication failure on decrypt) stops the action immediately with no retry.
+- Encryption cannot be switched on or off after the action is created, because existing objects would then be in the wrong format.
 
 ## 6. Sync engine
 
@@ -139,7 +142,15 @@ Paths that are new on one side are treated like "changed vs baseline" with an em
 
 **No baseline (first run on this machine for this action).** Paths that exist on only one side are copied to the other, within the limits of the direction. In `two-way` mode, a path that exists on both sides with different hashes is a **conflict**; there is no timestamp-based guessing.
 
+The direction used is the machine's entry in `machineDirections`, or the action's default `direction` if there is none.
+
 One-way modes never produce a conflict: the source side always wins. In `local-to-cloud` mode this means an edit made on another machine is overwritten (mirror semantics).
+
+**Untracked files in one-way modes.** A file that exists only on the destination side and was never synced (not in the baseline) is left alone: `cloud-to-local` never deletes a local file it has never synced, and `local-to-cloud` never deletes a cloud file it has never synced.
+
+**Symlinks.** Symlinks to files are followed. Symlinked directories are not descended into. Other special files are skipped.
+
+**Unmapped or removed items.** Only paths that belong to an item mapped on this machine, and are not excluded, take part in planning. Removing a mapping therefore never deletes anything in the cloud.
 
 ### 6.3 Snapshot guard
 Before executing, if the plan:
