@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,7 @@ type App struct {
 	DataDir     string
 	MachineID   string
 	MachineName string
+	nameMu      sync.RWMutex
 	// NewStorage builds the storage for a profile; tests replace it.
 	NewStorage func(p model.Profile, secret string) (storage.Storage, error)
 	// LockSettle is the best-effort lock read-back delay.
@@ -100,8 +102,17 @@ func (a *App) SetMachineName(name string) error {
 	if err := a.DB.SetMachineName(name); err != nil {
 		return err
 	}
+	a.nameMu.Lock()
 	a.MachineName = strings.TrimSpace(name)
+	a.nameMu.Unlock()
 	return nil
+}
+
+// CurrentMachineName returns the machine's friendly name; safe for concurrent use.
+func (a *App) CurrentMachineName() string {
+	a.nameMu.RLock()
+	defer a.nameMu.RUnlock()
+	return a.MachineName
 }
 
 func (a *App) storageFor(p model.Profile) (storage.Storage, error) {
@@ -126,7 +137,7 @@ func (a *App) deps(p model.Profile, actionID string, encrypted bool) (engine.Dep
 		return engine.Deps{}, err
 	}
 	d := engine.Deps{
-		Storage: st, Repo: a.DB, MachineID: a.MachineID, MachineName: a.MachineName,
+		Storage: st, Repo: a.DB, MachineID: a.MachineID, MachineName: a.CurrentMachineName(),
 		BackupRoot: filepath.Join(a.DataDir, "local-backups"),
 		LockMode:   lockMode(p), LockSettle: a.LockSettle, Log: a.Log,
 	}
@@ -194,7 +205,7 @@ func (a *App) CreateAction(ctx context.Context, profileID string, act model.Acti
 	act.ID = uuid.NewString()
 	act.ProfileID = profileID
 	act.ApplyDefaults()
-	act.Machines[a.MachineID] = a.MachineName
+	act.Machines[a.MachineID] = a.CurrentMachineName()
 	act.UpdatedAt = time.Now().UTC()
 	d, err := a.deps(p, act.ID, false)
 	if err != nil {
@@ -232,7 +243,7 @@ func (a *App) updateShared(ctx context.Context, actionID string, mutate func(*mo
 		return act, err
 	}
 	updated, err := engine.UpdateSharedAction(ctx, d, p.RootPrefix, actionID, func(x *model.Action) error {
-		x.Machines[a.MachineID] = a.MachineName
+		x.Machines[a.MachineID] = a.CurrentMachineName()
 		return mutate(x)
 	})
 	if err != nil {
@@ -363,7 +374,7 @@ func (a *App) Join(ctx context.Context, profileID, actionID, passphrase string) 
 		}
 	}
 	updated, err := engine.UpdateSharedAction(ctx, d, p.RootPrefix, actionID, func(x *model.Action) error {
-		x.Machines[a.MachineID] = a.MachineName
+		x.Machines[a.MachineID] = a.CurrentMachineName()
 		return nil
 	})
 	if err != nil {
