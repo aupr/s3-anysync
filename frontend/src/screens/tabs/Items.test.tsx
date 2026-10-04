@@ -56,6 +56,39 @@ test("shows this machine's path, other machines read-only, and maps an unmapped 
   expect(bindings.PickFolder).not.toHaveBeenCalled()
 })
 
+test('a whitespace-only mapping counts as unmapped', async () => {
+  const blank: ActionStatus = { ...st, action: { ...st.action, items: [{ id: 'i3', remoteName: 'blank', type: 'dir', excludes: null, localPaths: { m1: '   ' } }] } }
+  bindings.ConnectionState.mockResolvedValue({ connected: true })
+  bindings.Status.mockResolvedValue({ machineId: 'm1', machineName: 'mac', version: 'v', agent: true, actions: [blank] })
+  bindings.Profiles.mockResolvedValue([])
+  render(<App />)
+  fireEvent.click(await screen.findByText('Editor'))
+  fireEvent.click(screen.getByRole('button', { name: 'Items' }))
+  const row = screen.getByText('blank').closest('tr')!
+  expect(within(row).getByText('Not mapped on this machine')).toBeInTheDocument()
+  expect(within(row).getByRole('button', { name: 'Map blank' })).toHaveTextContent('Map…')
+  expect(within(row).queryByRole('button', { name: 'Unmap blank' })).not.toBeInTheDocument()
+})
+
+test('the auto-filled name follows the type and picked path until the user types a name', async () => {
+  await openItems()
+  const dlg = openAdd()
+  await chooseFolder(dlg, '/Users/me/docs')
+  expect(within(dlg).getByLabelText('Name in the bucket')).toHaveValue('docs')
+  fireEvent.change(within(dlg).getByLabelText('Type'), { target: { value: 'file' } })
+  bindings.PickFile.mockResolvedValue('/Users/me/a.txt')
+  fireEvent.click(within(dlg).getByRole('button', { name: 'Choose…' }))
+  await waitFor(() => expect(within(dlg).getByLabelText('Name in the bucket')).toHaveValue('a.txt'))
+  bindings.PickFile.mockResolvedValue('/Users/me/b.txt')
+  fireEvent.click(within(dlg).getByRole('button', { name: 'Choose…' }))
+  await waitFor(() => expect(within(dlg).getByLabelText('Name in the bucket')).toHaveValue('b.txt'))
+  fireEvent.change(within(dlg).getByLabelText('Name in the bucket'), { target: { value: 'mine' } })
+  bindings.PickFile.mockResolvedValue('/Users/me/c.txt')
+  fireEvent.click(within(dlg).getByRole('button', { name: 'Choose…' }))
+  await waitFor(() => expect(within(dlg).getByText('/Users/me/c.txt')).toBeInTheDocument())
+  expect(within(dlg).getByLabelText('Name in the bucket')).toHaveValue('mine')
+})
+
 test('Remap uses the folder picker for a dir item and replaces the mapping; cancelling the picker does nothing', async () => {
   await openItems()
   bindings.PickFolder.mockResolvedValue('')

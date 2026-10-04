@@ -23,8 +23,8 @@ export const PICKER_CAP = 500
 // rewrites files; the sync baseline is not touched.
 const targets: { id: RestoreTarget; label: string; hint: string }[] = [
   { id: 'local', label: 'This machine only', hint: 'Overwrites local files only. The next sync uploads them again (two-way) or undoes the restore (cloud → this machine).' },
-  { id: 'cloud', label: 'The cloud only', hint: 'Other machines receive these versions on their next sync.' },
-  { id: 'both', label: 'This machine and the cloud', hint: 'Everything goes back to the snapshot and stays there.' },
+  { id: 'cloud', label: 'The cloud only', hint: "The cloud copy is replaced. Other machines receive it on their next sync, and this machine's own next sync may bring it back to this machine or overwrite it depending on its direction." },
+  { id: 'both', label: 'This machine and the cloud', hint: 'Files in the snapshot go back to their snapshot versions here and in the cloud. Files created after the snapshot are not deleted.' },
 ]
 
 function RestoreDialog({ actionId, snap, onClose }: { actionId: string; snap: SnapshotInfo; onClose: () => void }) {
@@ -32,7 +32,7 @@ function RestoreDialog({ actionId, snap, onClose }: { actionId: string; snap: Sn
   const [selectedOnly, setSelectedOnly] = useState(false)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [filter, setFilter] = useState('')
-  const [to, setTo] = useState<RestoreTarget>('both')
+  const [to, setTo] = useState<RestoreTarget | null>(null)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const alive = useRef(true)
@@ -51,7 +51,7 @@ function RestoreDialog({ actionId, snap, onClose }: { actionId: string; snap: Sn
     return n
   })
   const restore = async () => {
-    if (busyRef.current) return
+    if (busyRef.current || to === null) return
     busyRef.current = true
     setBusy(true)
     try {
@@ -70,10 +70,10 @@ function RestoreDialog({ actionId, snap, onClose }: { actionId: string; snap: Sn
   }
   return (
     <Modal title={`Restore snapshot from ${formatTime(snap.createdAt)}`} wide onClose={busy ? () => {} : onClose} footer={
-      <><Button disabled={busy} onClick={onClose}>Cancel</Button><Button variant="primary" disabled={busy || all.length === 0 || (selectedOnly && selected.size === 0)} onClick={restore}>Restore</Button></>
+      <><Button disabled={busy} onClick={onClose}>Cancel</Button><Button variant="primary" disabled={busy || to === null || all.length === 0 || (selectedOnly && selected.size === 0)} onClick={restore}>Restore</Button></>
     }>
       <div className="space-y-3 text-sm">
-        <p>The current state is snapshotted first, so a restore can be undone. Restoring never deletes files.</p>
+        <p>Files that are replaced are backed up first: cloud versions in a snapshot, local files in a local backup folder. Restoring never deletes files.</p>
         {all.length === 0 && <p role="alert" className="text-red-600">This snapshot has no files to restore.</p>}
         <div className="space-y-1">
           <label className="flex items-center gap-2"><input type="radio" name="scope" disabled={busy} checked={!selectedOnly} onChange={() => setSelectedOnly(false)} />All {all.length} files</label>

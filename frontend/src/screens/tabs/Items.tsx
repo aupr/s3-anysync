@@ -29,6 +29,8 @@ function AddItemDialog({ actionId, existing, onClose }: { actionId: string; exis
   const [type, setType] = useState<'file' | 'dir'>('dir')
   const [localPath, setLocalPath] = useState('')
   const [remoteName, setRemoteName] = useState('')
+  // Once the user types a name, picking another path or type no longer overwrites it.
+  const [nameTouched, setNameTouched] = useState(false)
   const [excludes, setExcludes] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -56,7 +58,7 @@ function AddItemDialog({ actionId, existing, onClose }: { actionId: string; exis
       const p = type === 'dir' ? await api.pickFolder('Choose a folder to sync') : await api.pickFile('Choose a file to sync')
       if (!alive.current || gen !== pickGen.current || !p) return
       setLocalPath(p)
-      setRemoteName((n) => n || basename(p))
+      if (!nameTouched) setRemoteName(basename(p))
     } catch (e) {
       if (alive.current && gen === pickGen.current) setError(describeMessage(e))
     }
@@ -80,14 +82,14 @@ function AddItemDialog({ actionId, existing, onClose }: { actionId: string; exis
     <Modal title="Add item" onClose={busy ? () => {} : onClose} footer={<><Button disabled={busy} onClick={onClose}>Cancel</Button><Button variant="primary" disabled={busy || !localPath || normalized === null || !!nameProblem} onClick={add}>Add</Button></>}>
       <div className="space-y-3">
         <Field label="Type">
-          <Select aria-label="Type" value={type} disabled={busy} onChange={(e) => { pickGen.current++; setType(e.target.value as 'file' | 'dir'); setLocalPath('') }}>
+          <Select aria-label="Type" value={type} disabled={busy} onChange={(e) => { pickGen.current++; setType(e.target.value as 'file' | 'dir'); setLocalPath(''); if (!nameTouched) setRemoteName('') }}>
             <option value="dir">Folder</option>
             <option value="file">File</option>
           </Select>
         </Field>
         <div className="flex items-center gap-2"><Button disabled={busy} onClick={choose}>Choose…</Button><span className="truncate text-xs">{localPath || 'nothing chosen'}</span></div>
         <Field label="Name in the bucket" hint="The same name on every machine; each machine maps it to its own path.">
-          <Input aria-label="Name in the bucket" value={remoteName} disabled={busy} onChange={(e) => setRemoteName(e.target.value)} />
+          <Input aria-label="Name in the bucket" value={remoteName} disabled={busy} onChange={(e) => { setRemoteName(e.target.value); setNameTouched(e.target.value !== '') }} />
         </Field>
         {normalized !== null && normalized !== remoteName.trim() && !nameProblem && <p className="text-xs text-zinc-500">It will be stored as "{normalized}".</p>}
         {nameProblem && <p role="alert" className="text-sm text-red-600">{nameProblem}</p>}
@@ -171,7 +173,7 @@ export function ItemsTab({ st }: { st: ActionStatus }) {
           <thead><tr><th className={th}>Item</th><th className={th}>On this machine</th><th className={th}>Other machines</th><th className={th} /></tr></thead>
           <tbody>
             {items.map((it) => {
-              const here = it.localPaths?.[machineId]
+              const here = it.localPaths?.[machineId]?.trim() || undefined
               const others = Object.entries(it.localPaths ?? {}).filter(([m]) => m !== machineId)
               return (
                 <tr key={it.id} className="border-t border-zinc-200 dark:border-zinc-800">
