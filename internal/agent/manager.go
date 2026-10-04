@@ -64,10 +64,17 @@ type Manager struct {
 	cancel  context.CancelFunc
 	mu      sync.Mutex
 	workers map[string]*worker
+	// lastDone is, per action id, the done channel of the most recently
+	// started worker, which may still be finishing after a leave forgot it.
+	lastDone map[string]chan struct{}
+	// wg tracks every started worker goroutine, forgotten ones included.
+	wg      sync.WaitGroup
 	started bool
 	// nameGen counts machine renames; workers rebuild their runner when it
 	// moves past the generation theirs was built at.
 	nameGen atomic.Uint64
+	// activeTriggerSets counts trigger sets built and not yet stopped (tests).
+	activeTriggerSets atomic.Int32
 }
 
 var _ api.Service = (*Manager)(nil)
@@ -88,7 +95,7 @@ func New(opts Options) (*Manager, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{opts: opts, app: opts.App, log: log, bus: newBus(), ctx: ctx, cancel: cancel, workers: map[string]*worker{}}, nil
+	return &Manager{opts: opts, app: opts.App, log: log, bus: newBus(), ctx: ctx, cancel: cancel, workers: map[string]*worker{}, lastDone: map[string]chan struct{}{}}, nil
 }
 
 // Start starts one worker per local action.
@@ -116,25 +123,38 @@ func (m *Manager) startWorkerLocked(id string) {
 	// Either there is none or it was cancelled (a finished leave): replace it.
 	w := newWorker(m, id)
 	m.workers[id] = w
-	go w.loop()
+	if m.ctx.Err() != nil {
+		close(w.done) // closed manager: never run (Close may be waiting on wg)
+		return
+	}
+	m.lastDone[id] = w.done
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		w.loop()
+	}()
 }
 
+// startWorker starts the worker of id, first waiting until the previous one
+// (cancelled by a leave, possibly already forgotten) has finished its loop
+// and stopped its triggers, so two trigger sets never run at once.
 func (m *Manager) startWorker(id string) {
 	for {
 		m.mu.Lock()
-		old, ok := m.workers[id]
-		if ok && old.ctx.Err() != nil {
-			// A cancelled worker is on its way out: let it finish, then replace it.
-			m.mu.Unlock()
-			<-old.done
-			m.mu.Lock()
-			if m.workers[id] == old {
-				delete(m.workers, id)
+		if prev := m.lastDone[id]; prev != nil {
+			select {
+			case <-prev:
+				delete(m.lastDone, id)
+			default:
+				if cur, ok := m.workers[id]; !ok || cur.ctx.Err() != nil {
+					m.mu.Unlock()
+					<-prev
+					continue
+				}
 			}
 		}
 		if cur, ok := m.workers[id]; ok && cur.ctx.Err() != nil {
-			m.mu.Unlock()
-			continue
+			delete(m.workers, id)
 		}
 		m.startWorkerLocked(id)
 		m.mu.Unlock()
@@ -146,15 +166,9 @@ func (m *Manager) startWorker(id string) {
 // context; Close waits for the workers to exit.
 func (m *Manager) Close() error {
 	m.cancel()
-	m.mu.Lock()
-	ws := make([]*worker, 0, len(m.workers))
-	for _, w := range m.workers {
-		ws = append(ws, w)
-	}
+	m.mu.Lock() // after this no new worker goroutine is started
 	m.mu.Unlock()
-	for _, w := range ws {
-		<-w.done
-	}
+	m.wg.Wait() // current and forgotten workers alike
 	return nil
 }
 

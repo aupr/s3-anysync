@@ -163,7 +163,9 @@ func (m *Manager) mutate(ctx context.Context, id string, fn func(ctx context.Con
 		}
 		w.runner = nil
 		if a, err := m.app.Action(id); err == nil {
-			w.refreshTriggers(a)
+			if terr := w.refreshTriggers(a); terr != nil {
+				w.afterRun(model.SyncResult{}, terr)
+			}
 		}
 		m.bus.publish(api.Event{Type: api.EventActions, ActionID: id})
 		w.publishState()

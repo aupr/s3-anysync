@@ -73,6 +73,8 @@ type worker struct {
 	gen    uint64 // Manager.nameGen when runner was built
 	retry  *time.Timer
 	trig   *triggerSet
+	// schedBroken: the current error state comes from an invalid schedule.
+	schedBroken bool
 
 	mu sync.Mutex
 	st wstate
@@ -134,7 +136,7 @@ func (w *worker) loop() {
 // has already given up.
 func (w *worker) runJob(j *job) {
 	if err := w.ctx.Err(); err != nil {
-		j.done <- jobResult{nil, errShuttingDown}
+		j.done <- jobResult{nil, w.stopErr()}
 		return
 	}
 	if err := j.ctx.Err(); err != nil {
@@ -171,13 +173,22 @@ func (w *worker) trigger(reason string) {
 	}
 }
 
+// stopErr is what callers of a stopped worker get: the agent shutting down is
+// unavailable; a worker cancelled because its action was left is not found.
+func (w *worker) stopErr() error {
+	if w.m.ctx.Err() != nil {
+		return errShuttingDown
+	}
+	return fmt.Errorf("action %s: %w", w.id, api.ErrNotFound)
+}
+
 // do runs fn on the worker goroutine and waits for its result.
 func (w *worker) do(ctx context.Context, fn func(ctx context.Context) (any, error)) (any, error) {
 	j := &job{ctx: ctx, fn: fn, done: make(chan jobResult, 1)}
 	select {
 	case w.jobs <- j:
 	case <-w.ctx.Done():
-		return nil, errShuttingDown
+		return nil, w.stopErr()
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -195,7 +206,7 @@ func (w *worker) do(ctx context.Context, fn func(ctx context.Context) (any, erro
 			case r := <-j.done:
 				return r.v, r.err
 			default:
-				return nil, errShuttingDown
+				return nil, w.stopErr()
 			}
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -252,7 +263,13 @@ func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResu
 	if w.ctx.Err() != nil {
 		return res, err // shutting down: don't record an interruption as a failure
 	}
-	w.refreshTriggers(r.Action())
+	a := r.Action()
+	if w.runner != r {
+		a, _ = w.m.app.Action(w.id) // the runner was discarded after a panic
+	}
+	if terr := w.refreshTriggers(a); terr != nil && err == nil {
+		err = terr // an invalid schedule is a permanent error of the action
+	}
 	w.afterRun(res, err)
 	return res, err
 }
@@ -399,11 +416,3 @@ func (w *worker) publishState() {
 	st := w.status(a)
 	w.m.bus.publish(api.Event{Type: api.EventState, ActionID: w.id, Status: &st})
 }
-
-// Trigger hooks; Task 13 replaces these with the real implementation.
-type triggerSet struct{}
-
-func (w *worker) startTriggers()               {}
-func (w *worker) stopTriggers()                {}
-func (w *worker) refreshTriggers(model.Action) {}
-func (w *worker) nextScheduled() time.Time     { return time.Time{} }
