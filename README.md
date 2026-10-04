@@ -6,7 +6,7 @@ Design: [docs/superpowers/specs/2026-10-01-s3-anysync-design.md](docs/superpower
 
 ## Status
 
-Plans 1 and 2 are done: the sync engine, the command line, and the background agent (triggers, tray, notifications, IPC, autostart). The GUI and the installers come in Plans 3 and 4.
+Plans 1 and 2 are done: the sync engine, the command line, and the background agent (triggers, tray, notifications, IPC, autostart). The desktop GUI (Plan 3) is implemented; the installers come in Plan 4.
 
 ## Concepts
 
@@ -62,10 +62,10 @@ Run `./bin/s3-anysync-agent` with no arguments for every command. Flags always c
 ## Running the agent
 
 ```bash
-s3-anysync-agent run [--no-tray] [--verbose]
+s3-anysync-agent run [--no-tray] [--no-notify] [--verbose]
 ```
 
-The agent syncs in the background, shows a status icon and menu in the tray (unless `--no-tray`, or the build has no tray), and sends desktop notifications for conflicts, pending deletions and repeated failures. Logs are JSON files in `<data dir>/logs/agent-YYYY-MM-DD.log`, kept 7 days; `--verbose` also writes them to stderr. The level follows the log level setting. Stop it with Quit in the tray, Ctrl-C or SIGTERM; after IPC shutdown it cancels running syncs (waiting at most 5 s), then exits.
+The agent syncs in the background, shows a status icon and menu in the tray (unless `--no-tray`, or the build has no tray), and sends desktop notifications for conflicts, pending deletions and repeated failures. Logs are JSON files in `<data dir>/logs/agent-YYYY-MM-DD.log`, kept 7 days; `--verbose` also writes them to stderr. `--no-notify` posts no desktop notifications and only logs them at Info level (for development runs). The level follows the log level setting. Stop it with Quit in the tray, Ctrl-C or SIGTERM; after IPC shutdown it cancels running syncs (waiting at most 5 s), then exits.
 
 Only one process owns a data folder (`<data dir>/agent.lock`). If you start a second agent, or start one while a CLI command is running in-process, it exits with an error: retry in a moment.
 
@@ -104,6 +104,39 @@ The approval needs the digest of the list you reviewed, so a list that changed i
 - Manual snapshots: the newest `--retention` (default 20) are kept.
 - Automatic snapshots (`auto-pre-sync`, `pre-resolve`, `pre-restore`): kept while they are among the newest 50 or younger than 7 days; those that hold files about to be deleted are kept at least 30 days.
 
+## Desktop GUI
+
+A window over the running agent (Wails, React). Closing it never stops syncing; it starts the agent if none is running. It never opens the data folder itself: everything goes through the agent's IPC.
+
+Build (macOS needs the Xcode command-line tools); the output is in `cmd/gui/build/bin/`:
+
+```bash
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+cd cmd/gui && wails build
+```
+
+The agent binary must sit next to the GUI binary, or set `S3_ANYSYNC_AGENT` to its path.
+
+Development: run the frontend tests with `cd frontend && npm install && npm test`. To run the GUI against a throwaway data folder, start an agent first, then the GUI from `cmd/gui`, both with the same data folder and the file secret store:
+
+```bash
+S3_ANYSYNC_DATA_DIR=/tmp/s3as-dev S3_ANYSYNC_SECRETS=file s3-anysync-agent run --no-tray --no-notify
+cd cmd/gui && S3_ANYSYNC_DATA_DIR=/tmp/s3as-dev S3_ANYSYNC_SECRETS=file wails dev
+```
+
+Screens:
+
+- **Actions**: list of actions with their state; create, join, sync now, pause, cancel; each action has Overview, Items, Rules, Snapshots and History tabs.
+- **Profiles**: bucket connections; add, edit, test and remove (removal is refused while an action uses the profile).
+- **Conflicts**: shows both versions with a diff and applies your local/cloud choice per path.
+- **Deletions to review**: lists the paths a guarded sync wanted to delete; approve exactly what you reviewed.
+- **Activity**: recent sync results across all actions.
+- **Settings**: log level, machine name and autostart at login.
+
+Deletions you choose when resolving a conflict bypass the delete guard; the GUI asks you to confirm them in the resolver.
+
+Limitations specific to the GUI are listed under Known limitations.
+
 ## Tests
 
 ```bash
@@ -126,7 +159,7 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 
 ## Development
 
-`S3_ANYSYNC_SECRETS=file` keeps secrets unencrypted in `<data dir>/secrets.json` (mode 0600) instead of the keychain. Only for development and tests; any other value is an error.
+`S3_ANYSYNC_SECRETS=file` keeps secrets unencrypted in `<data dir>/secrets.json` (mode 0600) instead of the keychain. Only for development and tests; any other value is an error. Use the same value for the agent and for `wails dev` so both see the same secrets (see Desktop GUI).
 
 ## Known limitations
 
@@ -136,7 +169,7 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 - The remote lock is renewed over the network; a long stall can let it expire and another machine take it.
 - Restore to local writes the snapshot's files into the mapped local paths (backing up what it overwrites); it is not an exact rollback and does not remove local files that are absent from the snapshot.
 - A missing, renamed or unmounted item folder is refused with an error (`ErrRootMissing`) instead of deleting; fix the folder or unmap and map the item again.
-- The macOS tray needs a CGO build; a CGO-off build runs headless. There is no GUI yet, so "Open" is hidden in the tray.
+- The macOS tray needs a CGO build; a CGO-off build runs headless. "Open" in the tray starts the GUI only when its executable sits next to the agent; otherwise it is hidden.
 - The Windows build is a console app, so the HKCU Run autostart opens a console window until Plan 4 ships a `windowsgui` build.
 - Autostart is per user, not per data folder: it starts the default data folder. The agent rewrites the entry at start only when the stored executable no longer exists and `S3_ANYSYNC_DATA_DIR` is not set.
 - Items cannot contain the agent's own data folder (it would sync the agent's state): `item add`/`item map` refuse such a path, and a sync of an existing item that does is refused with an error.
@@ -144,3 +177,7 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 - A slow mass deletion spread over more than the watcher's MaxWait can stay under the delete guard threshold in each run (snapshots keep deletions for 30 days).
 - The Windows pieces (named pipe with its owner check, tray, HKCU Run autostart) are cross-compiled but UNTESTED on Windows; the pipe-owner check in particular has never run there.
 - The tray, desktop notifications and autostart have not been checked by hand on a real desktop yet (pending).
+- The GUI is not covered by automated end-to-end tests (only Go and frontend unit tests); it has been checked by hand.
+- The Settings autostart switch always changes the real per-user login item, even when the GUI runs against a development data folder.
+- Resolving a conflict sends only your choices, not the conflict contents you reviewed. If the same path is saved again with new content between viewing and Apply, your choice would apply to content you did not see. The GUI clears its choices after a `conflict` outcome, but a sync from another window or the CLI can still race.
+- If removing an action's passphrase fails after you leave the action, a stale worker can stay in the agent until it restarts.

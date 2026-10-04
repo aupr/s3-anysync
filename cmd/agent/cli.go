@@ -28,7 +28,7 @@ const usage = `usage: s3-anysync-agent <command> [flags] [arguments]
 Flags always come before arguments. When the agent is running, commands go
 through it; otherwise they run in this process.
 
-  run [--no-tray] [--verbose]          start the background agent
+  run [--no-tray] [--no-notify] [--verbose]  start the background agent
   status
   machine [--name NAME]
   settings [--log-level debug|info|warn|error]

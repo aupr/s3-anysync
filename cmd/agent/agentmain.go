@@ -38,6 +38,7 @@ type agentEnv struct {
 	configure    func(*app.App) // adjusts the App (tests: memory storage)
 	tray         bool
 	verbose      bool
+	noNotify     bool           // log notifications instead of posting them (development)
 	pollInterval time.Duration  // tests only
 	level        *slog.LevelVar // tests: observe the log level; nil makes a new one
 	stderr       io.Writer
@@ -69,6 +70,11 @@ func runAgent(ctx context.Context, env agentEnv) error {
 	}
 	log := logging.New(w, level)
 
+	notifier := env.notifier
+	if env.noNotify {
+		notifier = pickNotifier(true, log)
+	}
+
 	a, err := app.Open(env.dataDir, env.secrets, log)
 	if err != nil {
 		return err
@@ -84,7 +90,7 @@ func runAgent(ctx context.Context, env agentEnv) error {
 	}
 
 	m, err := agent.New(agent.Options{
-		App: a, Notifier: env.notifier, Autostart: env.autostart, Triggers: true,
+		App: a, Notifier: notifier, Autostart: env.autostart, Triggers: true,
 		PollInterval: env.pollInterval, LogLevel: level, Version: version, Log: log,
 	})
 	if err != nil {
@@ -128,12 +134,38 @@ func runAgent(ctx context.Context, env agentEnv) error {
 	return nil
 }
 
+// logNotifier is the development notifier: it only writes the notification to the log.
+type logNotifier struct{ log *slog.Logger }
+
+func (n logNotifier) Notify(title, message string) error {
+	n.log.Info("notification", "title", title, "message", message)
+	return nil
+}
+
+// pickNotifier returns the log-only notifier when noNotify is set, else the desktop one.
+func pickNotifier(noNotify bool, log *slog.Logger) notify.Notifier {
+	if noNotify {
+		return logNotifier{log: log}
+	}
+	return notify.NewDesktop()
+}
+
+// parseRunFlags parses the flags of "run".
+func parseRunFlags(args []string) (noTray, noNotify, verbose bool, err error) {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	nt := fs.Bool("no-tray", false, "run without the tray icon")
+	nn := fs.Bool("no-notify", false, "log notifications instead of posting desktop notifications")
+	v := fs.Bool("verbose", false, "also log to stderr")
+	if _, err := parseArgs(fs, args); err != nil {
+		return false, false, false, err
+	}
+	return *nt, *nn, *v, nil
+}
+
 // runAgentCommand is "s3-anysync-agent run".
 func runAgentCommand(args []string, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	noTray := fs.Bool("no-tray", false, "run without the tray icon")
-	verbose := fs.Bool("verbose", false, "also log to stderr")
-	if _, err := parseArgs(fs, args); err != nil {
+	noTray, noNotify, verbose, err := parseRunFlags(args)
+	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 2
 	}
@@ -150,8 +182,8 @@ func runAgentCommand(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = runAgent(ctx, agentEnv{
-		dataDir: dir, secrets: sec, autostart: defaultAutostart(), notifier: notify.NewDesktop(),
-		tray: !*noTray, verbose: *verbose, stderr: stderr,
+		dataDir: dir, secrets: sec, autostart: defaultAutostart(), notifier: pickNotifier(false, nil), noNotify: noNotify,
+		tray: !noTray, verbose: verbose, stderr: stderr,
 	})
 	if err != nil {
 		reportError(stderr, err)
