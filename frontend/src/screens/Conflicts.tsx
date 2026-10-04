@@ -17,10 +17,16 @@ export function Conflicts({ id }: { id: string }) {
   const { state } = useStore()
   const { navigate } = useRouter()
   const toast = useToast()
-  const { data: list, error: loadError, reload } = useLoad(() => api.conflicts(id), (e) => describeError(e).message, [id])
-  // Choices belong to the list they were made on: a reloaded list starts clean.
+  const { data: list, error: loadError, reload } = useLoad(() => api.conflicts(id).then((l) => [...l]), (e) => describeError(e).message, [id])
+  // One rule: choices are valid only for the exact list object they were made
+  // against. After a Resolve that did not succeed, the list on screen is
+  // invalid (stale) until a reload delivers a new list object (useLoad's fetch
+  // copies the array, so every load is a new object).
   const [choiceState, setChoiceState] = useState<{ list: unknown; map: Record<string, Side> }>({ list: null, map: {} })
-  const choices = choiceState.list === list ? choiceState.map : {}
+  const [staleList, setStaleList] = useState<unknown>(null)
+  const stale = list !== null && list === staleList
+  const choices = choiceState.list === list && !stale ? choiceState.map : {}
+  const pendingDeferred = useRef<{ deferred: string[]; summary: string } | null>(null)
   const setChoices = (f: (m: Record<string, Side>) => Record<string, Side>) => setChoiceState({ list, map: f(choices) })
   const [openState, setOpen] = useState<string | null>(null)
   const open = list?.some((c) => c.path === openState) ? openState : null
@@ -33,6 +39,19 @@ export function Conflicts({ id }: { id: string }) {
     alive.current = true
     return () => { alive.current = false }
   }, [])
+  // The "deferred" toast is composed once the reload has finished (or failed),
+  // so it only counts files that are really still in the list.
+  useEffect(() => {
+    const p = pendingDeferred.current
+    if (!p || (list === staleList && !loadError)) return
+    pendingDeferred.current = null
+    const inList = new Set((list ?? []).map((c) => c.path))
+    const still = p.deferred.filter((x) => inList.has(x)).length
+    toast.show(still > 0
+      ? `Resolved, but ${still} file(s) changed meanwhile and stay in the list: ${p.summary}`
+      : `Resolved; ${p.deferred.length} file(s) changed again meanwhile and will be handled by the next sync.`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list, loadError])
   const name = state.actions[id]?.action.name ?? id
   const back = () => navigate({ name: 'action', id, tab: 'overview' })
 
@@ -64,6 +83,7 @@ export function Conflicts({ id }: { id: string }) {
     setBusy(true)
     try {
       const r = await api.resolve(id, choices)
+      if (r.outcome !== 'ok') setStaleList(list)
       if (r.outcome === 'conflict') {
         toast.show('New conflicts appeared while resolving; review them again.')
         reload()
@@ -71,7 +91,8 @@ export function Conflicts({ id }: { id: string }) {
         toast.show('Your choices were not applied: other deletions were held back by the delete guard. Review them first.')
         if (alive.current) navigate({ name: 'deletes', id })
       } else if (r.deferred?.length) {
-        toast.show(`Resolved, but ${r.deferred.length} file(s) changed meanwhile and stay in the list: ${summarizeResult(r)}`)
+        setStaleList(list)
+        pendingDeferred.current = { deferred: r.deferred, summary: summarizeResult(r) }
         reload()
       } else {
         toast.show(`Resolved: ${summarizeResult(r)}`)
@@ -81,6 +102,7 @@ export function Conflicts({ id }: { id: string }) {
       const code = toAgentError(e).code
       if (code === 'invalid' || code === 'not-found') {
         // The saved conflicts changed since the user looked: the choices no longer fit.
+        setStaleList(list)
         toast.show('The conflicts changed since you looked. Review them again.', { details: toAgentError(e).message, tone: 'error' })
         reload()
       } else {
@@ -101,12 +123,13 @@ export function Conflicts({ id }: { id: string }) {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Conflicts in {name}</h1>
         <div className="space-x-2">
-          <Button disabled={busy} onClick={() => all('local')}>Keep all local</Button>
-          <Button disabled={busy} onClick={() => all('cloud')}>Keep all cloud</Button>
-          <Button variant="primary" disabled={!allChosen(list, choices) || busy} onClick={() => (deletions.length ? setConfirm(true) : resolve())}>Apply</Button>
+          <Button disabled={busy || stale} onClick={() => all('local')}>Keep all local</Button>
+          <Button disabled={busy || stale} onClick={() => all('cloud')}>Keep all cloud</Button>
+          <Button variant="primary" disabled={stale || !allChosen(list, choices) || busy} onClick={() => (deletions.length ? setConfirm(true) : resolve())}>Apply</Button>
         </div>
       </div>
-      {loadError && <p role="alert" className="text-sm text-red-600">Could not refresh the conflicts: {loadError}</p>}
+      {loadError && <div className="space-y-2"><p role="alert" className="text-sm text-red-600">Could not refresh the conflicts: {loadError}</p><Button onClick={reload}>Retry</Button></div>}
+      {stale && !loadError && <p role="status" className="text-sm text-zinc-500">Reloading the conflicts…</p>}
       <p className="text-sm text-zinc-500">
         Each file changed on this machine and in the cloud. Choose the version to keep. The version you do not keep is saved first:
         the cloud version in a snapshot, the local version in a local backup on this machine.
@@ -116,9 +139,9 @@ export function Conflicts({ id }: { id: string }) {
           <li key={c.path} className="p-3">
             <div className="flex items-center justify-between gap-3">
               <button type="button" className="truncate text-left font-mono text-sm hover:underline" onClick={() => setOpen(open === c.path ? null : c.path)}>{c.path}</button>
-              <div className="flex shrink-0 gap-3 text-sm">
-                <label className="flex items-center gap-1"><input type="radio" name={c.path} aria-label={`Keep local ${c.path}`} disabled={busy} checked={choices[c.path] === 'local'} onChange={() => setChoices((x) => ({ ...x, [c.path]: 'local' }))} />Keep local</label>
-                <label className="flex items-center gap-1"><input type="radio" name={c.path} aria-label={`Keep cloud ${c.path}`} disabled={busy} checked={choices[c.path] === 'cloud'} onChange={() => setChoices((x) => ({ ...x, [c.path]: 'cloud' }))} />Keep cloud</label>
+              <div role="radiogroup" aria-label={'Choose version for ' + c.path} className="flex shrink-0 gap-3 text-sm">
+                <label className="flex items-center gap-1"><input type="radio" name={c.path} aria-label={`Keep local ${c.path}`} disabled={busy || stale} checked={choices[c.path] === 'local'} onChange={() => setChoices((x) => ({ ...x, [c.path]: 'local' }))} />Keep local</label>
+                <label className="flex items-center gap-1"><input type="radio" name={c.path} aria-label={`Keep cloud ${c.path}`} disabled={busy || stale} checked={choices[c.path] === 'cloud'} onChange={() => setChoices((x) => ({ ...x, [c.path]: 'cloud' }))} />Keep cloud</label>
               </div>
             </div>
             <div className="mt-1 grid grid-cols-2 text-xs text-zinc-500"><span>Local: {describeEntry(c.local)}</span><span>Cloud: {describeEntry(c.remote)}</span></div>

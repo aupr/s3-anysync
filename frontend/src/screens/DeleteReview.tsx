@@ -19,6 +19,7 @@ export function DeleteReview({ id }: { id: string }) {
   const { data, error, reload } = useLoad(() => api.pendingDeletes(id).then((p) => ({ p })), (e) => describeError(e).message, [id])
   const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [showAll, setShowAll] = useState(false)
   const busyRef = useRef(false)
   const alive = useRef(true)
   useEffect(() => {
@@ -46,11 +47,14 @@ export function DeleteReview({ id }: { id: string }) {
       // Exactly the list on screen: the agent refuses a different saved list.
       const r = await api.approveDeletes(id, paths)
       if (r.outcome === 'deletes-pending') {
-        toast.show('The list of deletions changed, so nothing was approved. Review the new list.')
+        toast.show('The list of deletions changed (or grew), so nothing was approved. Review the new list.')
         reload()
       } else if (r.outcome === 'conflict') {
         toast.show('The sync found conflicts, so nothing was deleted. Resolve them first.')
         if (alive.current) navigate({ name: 'conflicts', id })
+      } else if (r.deferred?.length) {
+        toast.show(`Approved; ${r.deferred.length} file(s) were not deleted because they changed meanwhile (listed in the history)`)
+        if (alive.current) back()
       } else {
         toast.show(`Done: ${summarizeResult(r)}`)
         if (alive.current) back()
@@ -79,9 +83,10 @@ export function DeleteReview({ id }: { id: string }) {
       </p>
       {error && <p role="alert" className="text-sm text-red-600">Could not refresh the list: {error}</p>}
       <ul className="max-h-[60vh] overflow-auto rounded border border-zinc-200 p-2 font-mono text-xs dark:border-zinc-800">
-        {paths.slice(0, LIST_CAP).map((p) => <li key={p}>{p}</li>)}
-        {paths.length > LIST_CAP && <li className="text-zinc-500">…and {paths.length - LIST_CAP} more (all are approved together)</li>}
+        {(showAll ? paths : paths.slice(0, LIST_CAP)).map((p) => <li key={p}>{p}</li>)}
+        {!showAll && paths.length > LIST_CAP && <li className="text-zinc-500">…and {paths.length - LIST_CAP} more (all are approved together)</li>}
       </ul>
+      {!showAll && paths.length > LIST_CAP && <Button onClick={() => setShowAll(true)}>{`Show all ${paths.length} paths`}</Button>}
       <Button variant="danger" disabled={busy} onClick={() => setConfirm(true)}>{`Approve ${paths.length} deletion(s)`}</Button>
       {confirm && (
         <ConfirmDialog title="Approve the deletions?" danger confirmLabel="Approve" busy={busy} onCancel={() => setConfirm(false)} onConfirm={approve}

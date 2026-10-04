@@ -109,3 +109,32 @@ test('a load failure shows a message with Retry; null means nothing to review', 
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   expect(await screen.findByText('Nothing to review')).toBeInTheDocument()
 })
+
+test('approved with deferred files says how many were not deleted', async () => {
+  await openReview()
+  await screen.findByText('a')
+  bindings.ApproveDeletes.mockResolvedValueOnce(result({ deferred: ['a', 'b'] }))
+  fireEvent.click(screen.getByText('Approve 2 deletion(s)'))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByText('Approve'))
+  expect(await screen.findByText('Approved; 2 file(s) were not deleted because they changed meanwhile (listed in the history)')).toBeInTheDocument()
+})
+
+test('deletes-pending after approve says the list changed or grew', async () => {
+  await openReview()
+  await screen.findByText('a')
+  bindings.ApproveDeletes.mockResolvedValueOnce(result({ outcome: 'deletes-pending', pendingDeletes: ['a', 'b', 'c'] }))
+  bindings.PendingDeletes.mockResolvedValueOnce({ paths: ['a', 'b', 'c'], approved: false, detectedAt: 't' })
+  fireEvent.click(screen.getByText('Approve 2 deletion(s)'))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByText('Approve'))
+  expect(await screen.findByText('The list of deletions changed (or grew), so nothing was approved. Review the new list.')).toBeInTheDocument()
+})
+
+test('more than 2000 paths are capped with a Show all button', async () => {
+  const many = Array.from({ length: 2005 }, (_, i) => `f${String(i).padStart(4, '0')}`)
+  await openReview(many)
+  await screen.findByText('f0000')
+  expect(screen.queryByText('f2004')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Show all 2005 paths' }))
+  expect(screen.getByText('f2004')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Show all/ })).not.toBeInTheDocument()
+})
