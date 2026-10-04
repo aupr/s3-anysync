@@ -779,7 +779,11 @@ func (c *cli) approveDeletes(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "approved %d deletion(s)\n", len(p.Paths))
+	if res.Outcome == model.OutcomeDeletesPending {
+		fmt.Fprintln(c.out, "Nothing was approved: the sync held deletions back again (fresh list below).")
+	} else {
+		fmt.Fprintf(c.out, "approved %d deletion(s)\n", len(p.Paths))
+	}
 	c.printResult(res)
 	return nil
 }

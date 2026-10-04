@@ -21,8 +21,9 @@ import (
 
 // Client is api.Service over IPC.
 //
-// Cancelling the ctx of a call cancels the server-side job too, exactly as it
-// does in-process. A wrong or missing token yields a *api.RemoteError with
+// Cancelling the ctx of a call drops the job if it is still queued in the
+// agent; a job that already runs is not cancelled (the agent finishes it, or
+// cancels it at shutdown), so only the wait for the answer ends. A wrong or missing token yields a *api.RemoteError with
 // Code "unauthorized"; callers (the CLI) should check that code rather than
 // use errors.Is, as it stands for no sentinel error.
 type Client struct {

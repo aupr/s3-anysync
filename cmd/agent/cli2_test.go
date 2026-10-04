@@ -325,3 +325,32 @@ func TestConnectToAgentTimesOut(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// guardAgainService makes ApproveDeletes trip the delete guard again.
+type guardAgainService struct{ api.Service }
+
+func (g guardAgainService) ApproveDeletes(context.Context, string, []string) (model.SyncResult, error) {
+	return model.SyncResult{Outcome: model.OutcomeDeletesPending, PendingDeletes: []string{"snippets/new.json"}}, nil
+}
+
+func TestCLIApproveDeletesTrippingTheGuardAgainApprovesNothing(t *testing.T) {
+	m := opener(t, storage.NewMemory())
+	act, _, dir := cliSetup(t, m, 8)
+	runOK(t, m, "sync", act)
+	for i := 0; i < 5; i++ {
+		os.Remove(filepath.Join(dir, fmt.Sprintf("s%02d.json", i)))
+	}
+	runOK(t, m, "sync", act)
+	digest := valueAfter(t, runOK(t, m, "approve-deletes", act), "review digest")
+	again := func(ctx context.Context) (api.Service, func(), error) {
+		svc, closeFn, err := m(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return guardAgainService{svc}, closeFn, nil
+	}
+	out := runOK(t, again, "approve-deletes", "--yes", "--digest", digest, act)
+	if strings.Contains(out, "approved 5 deletion") || !strings.Contains(out, "Nothing was approved") || !strings.Contains(out, "pending deletion: snippets/new.json") {
+		t.Fatalf("output:\n%s", out)
+	}
+}
