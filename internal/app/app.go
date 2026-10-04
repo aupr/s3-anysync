@@ -155,15 +155,15 @@ func (a *App) deps(p model.Profile, actionID string, encrypted bool) (engine.Dep
 // AddProfile stores a profile and its secret key.
 func (a *App) AddProfile(p model.Profile, secret string) (model.Profile, error) {
 	if strings.TrimSpace(p.Name) == "" || strings.TrimSpace(p.Bucket) == "" {
-		return p, errors.New("profile name and bucket are required")
+		return p, fmt.Errorf("%w: profile name and bucket are required", engine.ErrInvalidInput)
 	}
 	if secret == "" {
-		return p, errors.New("secret access key is required")
+		return p, fmt.Errorf("%w: secret access key is required", engine.ErrInvalidInput)
 	}
 	if p.ID == "" {
 		p.ID = uuid.NewString()
 	}
-	p.RootPrefix = strings.Trim(strings.ReplaceAll(strings.TrimSpace(p.RootPrefix), `\`, "/"), "/")
+	p.RootPrefix = normalizePrefix(p.RootPrefix)
 	// Conditional-write support is only known after TestProfile probes the provider.
 	p.ConditionalWrites = false
 	if err := a.Secrets.Set(secrets.ProfileSecretKey(p.ID), secret); err != nil {

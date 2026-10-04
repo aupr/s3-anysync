@@ -60,6 +60,10 @@ func (r *rec) Profiles(context.Context) ([]model.Profile, error) { return nil, r
 func (r *rec) AddProfile(_ context.Context, q api.AddProfileRequest) (model.Profile, error) {
 	return model.Profile{}, r.log("AddProfile", q)
 }
+func (r *rec) UpdateProfile(_ context.Context, q api.UpdateProfileRequest) (model.Profile, error) {
+	return model.Profile{}, r.log("UpdateProfile", q)
+}
+func (r *rec) RemoveProfile(_ context.Context, id string) error { return r.log("RemoveProfile", id) }
 func (r *rec) TestProfile(_ context.Context, id string) (storage.ProbeResult, error) {
 	return storage.ProbeResult{}, r.log("TestProfile", id)
 }
@@ -186,6 +190,11 @@ func TestEveryClientMethodReachesTheRightRoute(t *testing.T) {
 			_, e := c.AddProfile(ctx, api.AddProfileRequest{Profile: model.Profile{Name: "p"}, Secret: "s"})
 			return e
 		}, `AddProfile ` + mj(api.AddProfileRequest{Profile: model.Profile{Name: "p"}, Secret: "s"})},
+		{"UpdateProfile", func() error {
+			_, e := c.UpdateProfile(ctx, api.UpdateProfileRequest{Profile: model.Profile{ID: "a/b", Name: "p"}, Secret: "s"})
+			return e
+		}, `UpdateProfile ` + mj(api.UpdateProfileRequest{Profile: model.Profile{ID: "a/b", Name: "p"}, Secret: "s"})},
+		{"RemoveProfile", func() error { return c.RemoveProfile(ctx, weird) }, `RemoveProfile "a b?c"`},
 		{"TestProfile", func() error { _, e := c.TestProfile(ctx, "a/b"); return e }, `TestProfile "a/b"`},
 		{"Discover", func() error { _, e := c.Discover(ctx, weird); return e }, `Discover "a b?c"`},
 		{"Actions", func() error { _, e := c.Actions(ctx); return e }, `Actions `},

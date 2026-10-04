@@ -411,3 +411,24 @@ func TestSettings(t *testing.T) {
 		t.Fatalf("settings = %+v, %v, level %v", s2, err, lv.Level())
 	}
 }
+
+func TestUpdateProfileRebuildsRunners(t *testing.T) {
+	e := newEnv(t, storage.NewMemory())
+	act, _, _ := e.newAction(t, 1)
+	ps, _ := e.m.Profiles(ctx)
+	before := e.m.nameGen.Load()
+	p := ps[0]
+	p.Region = "eu-2"
+	if _, err := e.m.UpdateProfile(ctx, api.UpdateProfileRequest{Profile: p}); err != nil {
+		t.Fatal(err)
+	}
+	if e.m.nameGen.Load() == before {
+		t.Fatal("runners not reset")
+	}
+	if _, err := e.m.Sync(ctx, act.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.RemoveProfile(ctx, p.ID); api.Code(err) != "in-use" {
+		t.Fatalf("remove in use: %v", err)
+	}
+}

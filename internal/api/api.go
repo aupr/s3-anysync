@@ -21,6 +21,9 @@ type Service interface {
 
 	Profiles(ctx context.Context) ([]model.Profile, error)
 	AddProfile(ctx context.Context, req AddProfileRequest) (model.Profile, error)
+	UpdateProfile(ctx context.Context, req UpdateProfileRequest) (model.Profile, error)
+	// RemoveProfile deletes a profile and its secret; code in-use while actions use it.
+	RemoveProfile(ctx context.Context, id string) error
 	TestProfile(ctx context.Context, profileID string) (storage.ProbeResult, error)
 	Discover(ctx context.Context, profileID string) ([]model.Action, error)
 
@@ -102,6 +105,12 @@ type Settings struct {
 	Autostart          bool   `json:"autostart"`
 	AutostartSupported bool   `json:"autostartSupported"` // read-only
 	LogLevel           string `json:"logLevel"`
+}
+
+// UpdateProfileRequest replaces a profile's fields; an empty Secret keeps the stored one.
+type UpdateProfileRequest struct {
+	Profile model.Profile `json:"profile"`
+	Secret  string        `json:"secret,omitempty"`
 }
 
 // AddProfileRequest adds a profile; Secret goes to the keychain.

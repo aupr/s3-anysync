@@ -354,3 +354,20 @@ func TestCLIApproveDeletesTrippingTheGuardAgainApprovesNothing(t *testing.T) {
 		t.Fatalf("output:\n%s", out)
 	}
 }
+
+func TestCLIProfileEditRemove(t *testing.T) {
+	t.Setenv("S3_ANYSYNC_SECRET", "secret")
+	m := opener(t, storage.NewMemory())
+	p := valueAfter(t, runOK(t, m, "profile", "add", "--name", "p", "--bucket", "b", "--access-key", "k"), "profile created")
+	if out := runOK(t, m, "profile", "edit", "--name", "renamed", p); !strings.Contains(out, "profile updated") {
+		t.Fatalf("edit output: %q", out)
+	}
+	if out := runOK(t, m, "profile", "list"); !strings.Contains(out, "renamed") {
+		t.Fatalf("list after edit: %q", out)
+	}
+	runOK(t, m, "action", "create", "--profile", p, "--name", "Editor")
+	var out, errb bytes.Buffer
+	if code := run([]string{"profile", "remove", p}, &out, &errb, m); code == 0 || !strings.Contains(errb.String(), "the profile is used by actions") {
+		t.Fatalf("remove in use: code %d, stderr %q", code, errb.String())
+	}
+}

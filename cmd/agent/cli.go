@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/niceit/s3-anysync/internal/app"
 	"github.com/niceit/s3-anysync/internal/datalock"
 	"github.com/niceit/s3-anysync/internal/engine"
 	"github.com/niceit/s3-anysync/internal/model"
@@ -35,6 +36,9 @@ through it; otherwise they run in this process.
   profile add --name N --bucket B --access-key K [--provider P] [--endpoint URL] [--region R] [--prefix P] [--path-style]
               (secret key from S3_ANYSYNC_SECRET)
   profile list
+  profile edit [--name N] [--provider P] [--endpoint URL] [--region R] [--bucket B] [--prefix P] [--access-key K] [--path-style] PROFILE_ID
+              (new secret key from S3_ANYSYNC_SECRET; otherwise the stored one is kept)
+  profile remove PROFILE_ID
   profile test PROFILE_ID
   action create --profile ID --name N [--direction D] [--no-propagate-deletes] [--receiver-restores-cloud] [--encrypt] [--exclude GLOB]... [--retention N]
               (passphrase from S3_ANYSYNC_PASSPHRASE when --encrypt)
@@ -131,6 +135,8 @@ func explain(err error) string {
 		return "  hint: an item's folder is missing (unmounted drive or renamed folder?); restore or re-mount it. If it was removed on purpose, unmap the item and map it again."
 	case errors.Is(err, engine.ErrProtectedPath):
 		return "  hint: this folder contains s3-anysync's own data folder; choose a narrower folder."
+	case errors.Is(err, app.ErrInUse):
+		return "  hint: the profile is used by actions; leave them first, or keep the bucket and folder."
 	case errors.Is(err, storage.ErrLocked):
 		return "  hint: another machine is syncing this action; try again in a minute."
 	case errors.Is(err, storage.ErrLockLost):
@@ -275,7 +281,7 @@ func (c *cli) autostart(ctx context.Context, args []string) error {
 
 func (c *cli) profile(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("profile: expected add, list or test")
+		return errors.New("profile: expected add, edit, remove, list or test")
 	}
 	switch args[0] {
 	case "add":
@@ -305,6 +311,74 @@ func (c *cli) profile(ctx context.Context, args []string) error {
 		}
 		fmt.Fprintf(c.out, "profile created: %s\n", p.ID)
 		return c.printProbe(ctx, p.ID)
+	case "edit":
+		fs := flag.NewFlagSet("profile edit", flag.ContinueOnError)
+		name := fs.String("name", "", "profile name")
+		provider := fs.String("provider", "", "provider label")
+		endpoint := fs.String("endpoint", "", "endpoint URL (empty for AWS)")
+		region := fs.String("region", "", "region")
+		bucket := fs.String("bucket", "", "bucket")
+		prefix := fs.String("prefix", "", "folder inside the bucket")
+		access := fs.String("access-key", "", "access key id")
+		pathStyle := fs.Bool("path-style", false, "path-style addressing")
+		pos, err := parseArgs(fs, args[1:], "PROFILE_ID")
+		if err != nil {
+			return err
+		}
+		profiles, err := c.svc.Profiles(ctx)
+		if err != nil {
+			return err
+		}
+		var p *model.Profile
+		for i := range profiles {
+			if profiles[i].ID == pos[0] {
+				p = &profiles[i]
+			}
+		}
+		if p == nil {
+			return fmt.Errorf("profile %s: %w", pos[0], api.ErrNotFound)
+		}
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if set["name"] {
+			p.Name = *name
+		}
+		if set["provider"] {
+			p.Provider = *provider
+		}
+		if set["endpoint"] {
+			p.Endpoint = *endpoint
+		}
+		if set["region"] {
+			p.Region = *region
+		}
+		if set["bucket"] {
+			p.Bucket = *bucket
+		}
+		if set["prefix"] {
+			p.RootPrefix = *prefix
+		}
+		if set["access-key"] {
+			p.AccessKeyID = *access
+		}
+		if set["path-style"] {
+			p.PathStyle = *pathStyle
+		}
+		if _, err := c.svc.UpdateProfile(ctx, api.UpdateProfileRequest{Profile: *p, Secret: os.Getenv("S3_ANYSYNC_SECRET")}); err != nil {
+			return err
+		}
+		fmt.Fprintln(c.out, "profile updated")
+		return nil
+	case "remove":
+		pos, err := parseArgs(flag.NewFlagSet("profile remove", flag.ContinueOnError), args[1:], "PROFILE_ID")
+		if err != nil {
+			return err
+		}
+		if err := c.svc.RemoveProfile(ctx, pos[0]); err != nil {
+			return err
+		}
+		fmt.Fprintln(c.out, "profile removed")
+		return nil
 	case "list":
 		if _, err := parseArgs(flag.NewFlagSet("profile list", flag.ContinueOnError), args[1:]); err != nil {
 			return err

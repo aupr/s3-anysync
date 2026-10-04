@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/niceit/s3-anysync/internal/app"
 	"github.com/niceit/s3-anysync/internal/datalock"
 	"github.com/niceit/s3-anysync/internal/engine"
 	"github.com/niceit/s3-anysync/internal/state"
@@ -36,6 +37,7 @@ var codes = []struct {
 	{"lock-lost", http.StatusConflict, []error{storage.ErrLockLost}},
 	{"access-denied", http.StatusForbidden, []error{storage.ErrAccessDenied}},
 	{"no-such-bucket", http.StatusUnprocessableEntity, []error{storage.ErrNoSuchBucket}},
+	{"in-use", http.StatusConflict, []error{app.ErrInUse}},
 	{"busy", http.StatusConflict, []error{datalock.ErrBusy}},
 	{"not-found", http.StatusNotFound, []error{ErrNotFound, state.ErrNotFound, storage.ErrNotFound}},
 	{"invalid", http.StatusBadRequest, []error{ErrInvalid, engine.ErrInvalidInput, engine.ErrProtectedPath}},

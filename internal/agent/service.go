@@ -93,6 +93,17 @@ func (m *Manager) AddProfile(ctx context.Context, req api.AddProfileRequest) (mo
 	return m.app.AddProfile(req.Profile, req.Secret)
 }
 
+func (m *Manager) UpdateProfile(ctx context.Context, req api.UpdateProfileRequest) (model.Profile, error) {
+	p, err := m.app.UpdateProfile(req.Profile, req.Secret)
+	if err != nil {
+		return p, err
+	}
+	m.resetRunners() // runners rebuild their storage with the new settings
+	return p, nil
+}
+
+func (m *Manager) RemoveProfile(ctx context.Context, id string) error { return m.app.RemoveProfile(id) }
+
 func (m *Manager) TestProfile(ctx context.Context, id string) (storage.ProbeResult, error) {
 	return m.app.TestProfile(ctx, id)
 }

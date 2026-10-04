@@ -100,6 +100,15 @@ func (s *Server) routes() http.Handler {
 		}
 		return svc.AddProfile(r.Context(), in)
 	})
+	h("PUT /profiles/{id}", func(r *http.Request) (any, error) {
+		var in api.UpdateProfileRequest
+		if err := decode(r, &in); err != nil {
+			return nil, err
+		}
+		in.Profile.ID = id(r)
+		return svc.UpdateProfile(r.Context(), in)
+	})
+	h("DELETE /profiles/{id}", func(r *http.Request) (any, error) { return nil, svc.RemoveProfile(r.Context(), id(r)) })
 	h("POST /profiles/{id}/test", func(r *http.Request) (any, error) { return svc.TestProfile(r.Context(), id(r)) })
 	h("GET /profiles/{id}/discover", func(r *http.Request) (any, error) { return svc.Discover(r.Context(), id(r)) })
 

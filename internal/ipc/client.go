@@ -130,6 +130,15 @@ func (c *Client) AddProfile(ctx context.Context, req api.AddProfileRequest) (mod
 	return v, c.call(ctx, "POST", "/profiles", req, &v)
 }
 
+func (c *Client) UpdateProfile(ctx context.Context, req api.UpdateProfileRequest) (model.Profile, error) {
+	var v model.Profile
+	return v, c.call(ctx, "PUT", "/profiles/"+esc(req.Profile.ID), req, &v)
+}
+
+func (c *Client) RemoveProfile(ctx context.Context, id string) error {
+	return c.call(ctx, "DELETE", "/profiles/"+esc(id), nil, nil)
+}
+
 func (c *Client) TestProfile(ctx context.Context, id string) (storage.ProbeResult, error) {
 	var v storage.ProbeResult
 	return v, c.call(ctx, "POST", "/profiles/"+esc(id)+"/test", nil, &v)
