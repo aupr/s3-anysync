@@ -402,7 +402,7 @@ git commit -m "feat(model,state): delete guard settings, rules, pending deletion
 **Interfaces:**
 - Consumes: Task 1 (`PendingDeletes`, `Repo.Save/LoadPendingDeletes`, `OutcomeDeletesPending`, `HistoryApproveDeletes`), and the existing `run`, `syncOnce` and `applyOverrides` in sync.go.
 - Produces:
-  - `(*Runner).ApproveDeletes(ctx) (model.SyncResult, error)`. It returns an error when nothing is pending.
+  - `(*Runner).ApproveDeletes(ctx, reviewed []string) (model.SyncResult, error)`. It returns an error when nothing is pending. *(Amended during execution, user decision: approval is bound to the reviewed list; see the fix commit.)*
   - `Sync` and `Resolve` may now return `Outcome == OutcomeDeletesPending` with `PendingDeletes` set, having applied nothing.
   - The unexported `massDeletes(ops []Op, resolved map[string]bool, tracked int, a model.Action) []string`.
 - Semantics (spec §13):
@@ -2541,7 +2541,10 @@ type Service interface {
 	Pause(ctx context.Context, actionID string) error
 	Resume(ctx context.Context, actionID string) error
 	PendingDeletes(ctx context.Context, actionID string) (*model.PendingDeletes, error)
-	ApproveDeletes(ctx context.Context, actionID string) (model.SyncResult, error)
+	// ApproveDeletes approves the pending deletions, but only if the saved list
+	// still equals reviewed (the paths the user was shown); otherwise nothing
+	// is approved and the result is deletes-pending with the fresh list.
+	ApproveDeletes(ctx context.Context, actionID string, reviewed []string) (model.SyncResult, error)
 
 	Snapshots(ctx context.Context, actionID string) ([]model.SnapshotInfo, error)
 	Restore(ctx context.Context, actionID string, req RestoreRequest) (engine.RestoreResult, error)
@@ -3305,13 +3308,19 @@ func TestDeleteGuardPausesUntilApproved(t *testing.T) {
 	if st := e.state(t, act.ID); st.State != api.StatePausedDeletes || st.PendingDeletes != 5 {
 		t.Fatalf("status = %+v", st)
 	}
-	if p, err := e.m.PendingDeletes(ctx, act.ID); err != nil || p == nil || len(p.Paths) != 5 {
+	p, err := e.m.PendingDeletes(ctx, act.ID)
+	if err != nil || p == nil || len(p.Paths) != 5 {
 		t.Fatalf("pending = %+v, %v", p, err)
 	}
 	if msgs := e.rec.Messages(); len(msgs) != 1 || !strings.Contains(msgs[0], "approval") {
 		t.Fatalf("notifications = %v", msgs)
 	}
-	res, err = e.m.ApproveDeletes(ctx, act.ID)
+	// Approving a list the user did not review approves nothing.
+	res, err = e.m.ApproveDeletes(ctx, act.ID, p.Paths[:2])
+	if err != nil || res.Outcome != model.OutcomeDeletesPending || res.DeletedRemote != 0 {
+		t.Fatalf("approve of a different list = %+v, %v", res, err)
+	}
+	res, err = e.m.ApproveDeletes(ctx, act.ID, p.Paths)
 	if err != nil || res.DeletedRemote != 5 {
 		t.Fatalf("approve = %+v, %v", res, err)
 	}
@@ -4320,8 +4329,8 @@ func (m *Manager) Resolve(ctx context.Context, id string, choices map[string]mod
 	return m.syncJob(ctx, id, func(c context.Context, r *engine.Runner) (model.SyncResult, error) { return r.Resolve(c, choices) })
 }
 
-func (m *Manager) ApproveDeletes(ctx context.Context, id string) (model.SyncResult, error) {
-	return m.syncJob(ctx, id, func(c context.Context, r *engine.Runner) (model.SyncResult, error) { return r.ApproveDeletes(c) })
+func (m *Manager) ApproveDeletes(ctx context.Context, id string, reviewed []string) (model.SyncResult, error) {
+	return m.syncJob(ctx, id, func(c context.Context, r *engine.Runner) (model.SyncResult, error) { return r.ApproveDeletes(c, reviewed) })
 }
 
 // runnerJob runs a non-sync engine call on the action's worker.
@@ -5906,7 +5915,15 @@ func (s *Server) routes() http.Handler {
 	h("POST /actions/{id}/pause", func(r *http.Request) (any, error) { return nil, svc.Pause(r.Context(), id(r)) })
 	h("POST /actions/{id}/resume", func(r *http.Request) (any, error) { return nil, svc.Resume(r.Context(), id(r)) })
 	h("GET /actions/{id}/pending-deletes", func(r *http.Request) (any, error) { return svc.PendingDeletes(r.Context(), id(r)) })
-	h("POST /actions/{id}/approve-deletes", func(r *http.Request) (any, error) { return svc.ApproveDeletes(r.Context(), id(r)) })
+	h("POST /actions/{id}/approve-deletes", func(r *http.Request) (any, error) {
+		var in struct {
+			Paths []string `json:"paths"`
+		}
+		if err := decode(r, &in); err != nil {
+			return nil, err
+		}
+		return svc.ApproveDeletes(r.Context(), id(r), in.Paths)
+	})
 	h("GET /actions/{id}/snapshots", func(r *http.Request) (any, error) { return svc.Snapshots(r.Context(), id(r)) })
 	h("POST /actions/{id}/restore", func(r *http.Request) (any, error) {
 		var in api.RestoreRequest
@@ -6226,9 +6243,9 @@ func (c *Client) PendingDeletes(ctx context.Context, id string) (*model.PendingD
 	return v, c.call(ctx, "GET", "/actions/"+esc(id)+"/pending-deletes", nil, &v)
 }
 
-func (c *Client) ApproveDeletes(ctx context.Context, id string) (model.SyncResult, error) {
+func (c *Client) ApproveDeletes(ctx context.Context, id string, reviewed []string) (model.SyncResult, error) {
 	var v model.SyncResult
-	return v, c.call(ctx, "POST", "/actions/"+esc(id)+"/approve-deletes", nil, &v)
+	return v, c.call(ctx, "POST", "/actions/"+esc(id)+"/approve-deletes", map[string][]string{"paths": reviewed}, &v)
 }
 
 func (c *Client) Snapshots(ctx context.Context, id string) ([]model.SnapshotInfo, error) {
@@ -7330,13 +7347,13 @@ func TestCLIApproveDeletes(t *testing.T) {
 	if !strings.Contains(out, "deletes-pending") || !strings.Contains(out, "pending deletion: snippets/s00.json") || !strings.Contains(out, "approve-deletes") {
 		t.Fatalf("sync:\n%s", out)
 	}
-	if out := runOK(t, m, "approve-deletes", "--list", act); strings.Count(out, "pending deletion:") != 5 {
-		t.Fatalf("list:\n%s", out)
+	if out := runOK(t, m, "approve-deletes", act); strings.Count(out, "pending deletion:") != 5 || !strings.Contains(out, "approve-deletes --yes") {
+		t.Fatalf("list without --yes must not approve:\n%s", out)
 	}
-	if out := runOK(t, m, "approve-deletes", act); !strings.Contains(out, "deleted in cloud 5") {
+	if out := runOK(t, m, "approve-deletes", "--yes", act); !strings.Contains(out, "deleted in cloud 5") {
 		t.Fatalf("approve:\n%s", out)
 	}
-	if out := runOK(t, m, "approve-deletes", act); !strings.Contains(out, "no deletions are waiting") {
+	if out := runOK(t, m, "approve-deletes", "--yes", act); !strings.Contains(out, "no deletions are waiting") {
 		t.Fatalf("nothing pending:\n%s", out)
 	}
 }
@@ -7672,7 +7689,7 @@ through it; otherwise they run in this process.
   sync ACTION_ID
   pause ACTION_ID
   resume ACTION_ID
-  approve-deletes [--list] ACTION_ID
+  approve-deletes [--yes] ACTION_ID      (lists the pending deletions; --yes approves exactly the listed ones)
   snapshot ACTION_ID
   snapshots ACTION_ID
   restore --to local|cloud|both [--path P]... ACTION_ID TS
@@ -8279,7 +8296,7 @@ func (c *cli) printResult(res model.SyncResult) {
 		fmt.Fprintf(c.out, "  pending deletion: %s\n", p)
 	}
 	if res.Outcome == model.OutcomeDeletesPending {
-		fmt.Fprintln(c.out, "These deletions are held back by the delete guard. Check them, then run: approve-deletes ACTION_ID (or restore the files).")
+		fmt.Fprintln(c.out, "These deletions are held back by the delete guard. Check them (approve-deletes ACTION_ID), then approve with --yes (or restore the files).")
 	}
 	for _, p := range res.Unsupported {
 		fmt.Fprintf(c.out, "  not synced here (name not allowed on this system): %s\n", p)
@@ -8333,7 +8350,7 @@ func (c *cli) resume(ctx context.Context, args []string) error {
 
 func (c *cli) approveDeletes(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("approve-deletes", flag.ContinueOnError)
-	list := fs.Bool("list", false, "only list the pending deletions")
+	yes := fs.Bool("yes", false, "approve exactly the deletions listed now")
 	pos, err := actionArg(fs, args)
 	if err != nil {
 		return err
@@ -8349,10 +8366,11 @@ func (c *cli) approveDeletes(ctx context.Context, args []string) error {
 	for _, x := range p.Paths {
 		fmt.Fprintf(c.out, "  pending deletion: %s\n", x)
 	}
-	if *list {
+	if !*yes {
+		fmt.Fprintf(c.out, "To approve exactly these %d deletion(s): approve-deletes --yes %s\n", len(p.Paths), pos[0])
 		return nil
 	}
-	res, err := c.svc.ApproveDeletes(ctx, pos[0])
+	res, err := c.svc.ApproveDeletes(ctx, pos[0], p.Paths)
 	if err != nil {
 		return err
 	}
@@ -8942,7 +8960,7 @@ In `README.md`:
   - That every other command talks to the running agent automatically (or works in-process when none runs).
   - `status`, `pause`, `resume`, `history`.
 - Add "Triggers": `action rules --on-change`, `--schedule` specs, the remote poll every `--poll` minutes when on-change has no schedule, and that triggers pause in every paused state.
-- Add "Delete guard": the defaults, `approve-deletes [--list]`, and per-action `--delete-guard-files/--delete-guard-percent`.
+- Add "Delete guard": the defaults, `approve-deletes [--yes]`, and per-action `--delete-guard-files/--delete-guard-percent`.
 - Add "Snapshot retention": the manual vs automatic rules from spec §13.
 - Update "Known limitations":
   - Remove "no background agent", "no mass-delete threshold", "two processes on one data dir" (now prevented by `agent.lock`), "re-pointing while a sync runs" (the agent serialises it), and "Windows-unsafe names" (now skipped and reported).
