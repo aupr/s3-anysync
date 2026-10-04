@@ -2,8 +2,11 @@ import { Badge, Button, EmptyState } from '../components/ui'
 import { stateLabels, stateTone } from '../lib/format'
 import { useRouter, type Tab } from '../lib/router'
 import { useStore } from '../lib/store'
+import { HistoryTab } from './tabs/History'
+import { ItemsTab } from './tabs/Items'
 import { Overview } from './tabs/Overview'
 import { RulesTab } from './tabs/Rules'
+import { SnapshotsTab } from './tabs/Snapshots'
 
 const tabs: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
@@ -39,9 +42,9 @@ export function ActionDetail({ id, tab }: { id: string; tab: Tab }) {
       </div>
       {tab === 'overview' && <Overview key={id} st={st} />}
       {tab === 'rules' && <RulesTab key={id} st={st} />}
-      {tab === 'items' && <EmptyState title="Items are added in Task 12." />}
-      {tab === 'snapshots' && <EmptyState title="Snapshots are added in Task 12." />}
-      {tab === 'history' && <EmptyState title="History is added in Task 12." />}
+      {tab === 'items' && <ItemsTab key={id} st={st} />}
+      {tab === 'snapshots' && <SnapshotsTab key={id} st={st} />}
+      {tab === 'history' && <HistoryTab key={id} st={st} />}
     </div>
   )
 }
