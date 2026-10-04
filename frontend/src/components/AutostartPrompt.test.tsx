@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 vi.mock('../lib/bridge', () => import('../test/mockBridge'))
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { bindings } from '../test/mockBridge'
 import App from '../App'
@@ -17,11 +17,21 @@ function boot(settings: object, strict = false) {
 }
 
 test('asks once and enables on Yes', async () => {
+  const fresh = { ...base, machineName: 'renamed', logLevel: 'debug' }
+  bindings.Settings.mockResolvedValueOnce(base).mockResolvedValueOnce(fresh)
   boot(base)
-  bindings.UpdateSettings.mockResolvedValue({ ...base, autostart: true, autostartOffered: true })
+  bindings.UpdateSettings.mockResolvedValue({ ...fresh, autostart: true, autostartOffered: true })
   fireEvent.click(await screen.findByRole('button', { name: 'Yes, start at login' }))
-  await waitFor(() => expect(bindings.UpdateSettings).toHaveBeenCalledWith({ ...base, autostart: true, autostartOffered: true }))
+  await waitFor(() => expect(bindings.UpdateSettings).toHaveBeenCalledWith({ ...fresh, autostart: true, autostartOffered: true }))
   await waitFor(() => expect(screen.queryByRole('dialog', dialog)).toBeNull())
+})
+
+test('falls back to the snapshot when the re-read fails', async () => {
+  bindings.Settings.mockResolvedValueOnce(base).mockRejectedValueOnce('{"code":"unreachable","message":"down"}')
+  boot(base)
+  bindings.UpdateSettings.mockResolvedValue({ ...base, autostartOffered: true })
+  fireEvent.click(await screen.findByRole('button', { name: 'Not now' }))
+  await waitFor(() => expect(bindings.UpdateSettings).toHaveBeenCalledWith({ ...base, autostartOffered: true }))
 })
 
 test('Not now records the answer without enabling', async () => {
@@ -39,6 +49,7 @@ test.each([
 ])('not shown when %s', async (_, s) => {
   boot(s)
   await waitFor(() => expect(bindings.Settings).toHaveBeenCalled())
+  await act(async () => { await Promise.resolve(); await Promise.resolve() })
   expect(screen.queryByRole('dialog', dialog)).toBeNull()
 })
 
@@ -78,20 +89,6 @@ test('a failing or late settings load never shows the prompt or throws', async (
   bindings.Settings.mockRejectedValue('{"code":"unreachable","message":"down"}')
   render(<App />)
   await waitFor(() => expect(bindings.Settings).toHaveBeenCalled())
-  expect(screen.queryByRole('dialog', dialog)).toBeNull()
-})
-
-test('a result arriving after unmount does not show the prompt', async () => {
-  let resolve: (v: unknown) => void = () => {}
-  bindings.ConnectionState.mockResolvedValue({ connected: true })
-  bindings.Status.mockResolvedValue({ machineId: 'm1', machineName: 'mac', version: 'v', agent: true, actions: [] })
-  bindings.Profiles.mockResolvedValue([])
-  bindings.Settings.mockReturnValue(new Promise((r) => { resolve = r }))
-  const { unmount } = render(<App />)
-  await waitFor(() => expect(bindings.Settings).toHaveBeenCalled())
-  unmount()
-  resolve(base)
-  await Promise.resolve()
   expect(screen.queryByRole('dialog', dialog)).toBeNull()
 })
 

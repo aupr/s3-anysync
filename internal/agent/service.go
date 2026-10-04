@@ -40,7 +40,9 @@ func (m *Manager) Settings(ctx context.Context) (api.Settings, error) {
 // UpdateSettings applies the whole Settings value: read it first, change
 // what you need, send it back. MachineID and AutostartSupported are ignored.
 // AutostartOffered (the first-run question was answered) is stored once the
-// autostart step succeeded, and is also set whenever Autostart changes.
+// autostart step succeeded, and is also set whenever Autostart changes. The
+// flag can only be set through the API, never cleared: a stale client sending
+// false leaves a stored true untouched.
 // The whole request is validated before anything is changed.
 func (m *Manager) UpdateSettings(ctx context.Context, s api.Settings) (api.Settings, error) {
 	name := strings.TrimSpace(s.MachineName)
@@ -71,8 +73,8 @@ func (m *Manager) UpdateSettings(ctx context.Context, s api.Settings) (api.Setti
 			return cur, err
 		}
 	}
-	if offered := s.AutostartOffered || s.Autostart != cur.Autostart; offered != cur.AutostartOffered {
-		if err := m.app.SetAutostartOffered(offered); err != nil {
+	if !cur.AutostartOffered && (s.AutostartOffered || s.Autostart != cur.Autostart) {
+		if err := m.app.SetAutostartOffered(true); err != nil {
 			return api.Settings{}, err
 		}
 	}

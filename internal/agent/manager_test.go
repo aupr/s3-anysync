@@ -483,6 +483,24 @@ func TestAutostartOfferedThroughSettings(t *testing.T) {
 	}
 }
 
+func TestAutostartOfferedCannotBeClearedByStaleClient(t *testing.T) {
+	e := newEnv(t, storage.NewMemory(), func(o *Options) { o.Autostart = &fakeAutostart{} })
+	s, _ := e.m.Settings(ctx)
+	stale := s // snapshot taken before the prompt was answered
+	s.AutostartOffered = true
+	if _, err := e.m.UpdateSettings(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	stale.AutostartOffered = false
+	got, err := e.m.UpdateSettings(ctx, stale)
+	if err != nil || !got.AutostartOffered {
+		t.Fatalf("after stale update = %+v, %v", got, err)
+	}
+	if again, _ := e.m.Settings(ctx); !again.AutostartOffered {
+		t.Fatalf("flag was cleared: %+v", again)
+	}
+}
+
 type failingAutostart struct{ fakeAutostart }
 
 func (f *failingAutostart) Enable() error { return errors.New("launchctl failed") }

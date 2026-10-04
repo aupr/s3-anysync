@@ -34,7 +34,9 @@ export function AutostartPrompt() {
     inFlight.current = true
     setBusy(true)
     try {
-      await api.updateSettings({ ...settings, autostart: enable || settings.autostart, autostartOffered: true })
+      // send the current values so a stale snapshot cannot overwrite other settings
+      const cur = await api.settings().catch(() => settings)
+      await api.updateSettings({ ...cur, autostart: enable || cur.autostart, autostartOffered: true })
     } catch (e) {
       toast.error(e)
     } finally {
