@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/niceit/s3-anysync/internal/engine"
 	"github.com/niceit/s3-anysync/internal/model"
 	"github.com/niceit/s3-anysync/internal/schedule"
 	"github.com/niceit/s3-anysync/internal/storage"
@@ -311,4 +313,166 @@ func TestStaleWorkerReportsNotFound(t *testing.T) {
 	if !errors.Is(err, api.ErrUnavailable) {
 		t.Fatalf("after Close error = %v", err)
 	}
+}
+
+// setBucketSchedule rewrites the bucket copy of an action's schedule behind
+// the agent's back (as another machine without local validation could).
+func (e *testEnv) setBucketSchedule(t *testing.T, store storage.Storage, id string, s model.Schedule) {
+	t.Helper()
+	a, err := e.a.Action(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.a.DB.GetProfile(a.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := engine.NewLayout(p.RootPrefix, id).ActionJSON()
+	data, _, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw model.Action
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw.Triggers.Schedule = s
+	raw.UpdatedAt = raw.UpdatedAt.Add(time.Second)
+	data, _ = json.Marshal(raw)
+	if _, err := store.Put(ctx, key, data, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validSchedule() model.Schedule {
+	return model.Schedule{Kind: model.ScheduleCron, Cron: "0 3 * * *"}
+}
+
+func TestBucketScheduleTooFastOrNeverIsPermanentError(t *testing.T) {
+	for _, cron := range []string{"@every 1s", "0 0 30 2 *"} {
+		t.Run(cron, func(t *testing.T) {
+			store := storage.NewMemory()
+			e := newEnv(t, store, withTriggers)
+			act, _, _ := e.newAction(t, 1)
+			e.setBucketSchedule(t, store, act.ID, model.Schedule{Kind: model.ScheduleCron, Cron: cron})
+			if _, err := e.m.Sync(ctx, act.ID); err != nil && !errors.Is(err, errInvalidSchedule) {
+				t.Fatal(err)
+			}
+			waitFor(t, "permanent error", func() bool {
+				st := e.state(t, act.ID)
+				return st.State == api.StateError && strings.Contains(st.LastError, "invalid schedule")
+			})
+			before := historyLen(t, e, act.ID)
+			time.Sleep(2 * time.Second)
+			if after := historyLen(t, e, act.ID); after != before {
+				t.Fatalf("history grew %d -> %d: syncs keep running", before, after)
+			}
+			if st := e.state(t, act.ID); st.State != api.StateError || !st.NextRun.IsZero() {
+				t.Fatalf("not a permanent error: %+v", st)
+			}
+			// Fixing the schedule clears the error and syncing resumes.
+			rules := act.Rules()
+			rules.Triggers.Schedule = validSchedule()
+			if _, err := e.m.UpdateRules(ctx, act.ID, rules); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "error cleared and sync", func() bool {
+				return e.state(t, act.ID).State == api.StateIdle && historyLen(t, e, act.ID) > before
+			})
+		})
+	}
+}
+
+func TestFixedScheduleDoesNotOverridePause(t *testing.T) {
+	store := storage.NewMemory()
+	e := newEnv(t, store, withTriggers)
+	act, _, _ := e.newAction(t, 1)
+	e.setBucketSchedule(t, store, act.ID, model.Schedule{Kind: model.ScheduleCron, Cron: "@every 1s"})
+	e.m.Sync(ctx, act.ID)
+	waitFor(t, "permanent error", func() bool { return e.state(t, act.ID).State == api.StateError })
+	if err := e.m.Pause(ctx, act.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := historyLen(t, e, act.ID)
+	rules := act.Rules()
+	rules.Triggers.Schedule = validSchedule()
+	if _, err := e.m.UpdateRules(ctx, act.ID, rules); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if st := e.state(t, act.ID); st.State != api.StatePausedUser {
+		t.Fatalf("state = %s, want paused-user", st.State)
+	}
+	if after := historyLen(t, e, act.ID); after != before {
+		t.Fatalf("a paused action synced: history %d -> %d", before, after)
+	}
+	if err := e.m.Resume(ctx, act.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "sync after resume", func() bool {
+		return historyLen(t, e, act.ID) > before && e.state(t, act.ID).State == api.StateIdle
+	})
+}
+
+func TestPanicWithTriggersKeepsTriggersAndWorker(t *testing.T) {
+	g := &gateStore{Memory: storage.NewMemory(), entered: make(chan struct{}, 1)}
+	e := newEnv(t, g, withTriggers, func(o *Options) { o.Backoff = []time.Duration{time.Hour} })
+	act, _, dir := e.newTriggeredAction(t, 1, onChange)
+	waitFor(t, "first sync", func() bool { return e.state(t, act.ID).LastOutcome == model.OutcomeOK })
+	w, _ := e.m.worker(act.ID)
+	var stops atomic.Int32
+	hook := func() { stops.Add(1) }
+	stopTriggersHook.Store(&hook)
+	t.Cleanup(func() { stopTriggersHook.Store(nil) })
+	os.WriteFile(filepath.Join(dir, "s00.json"), []byte("changed"), 0o644)
+	g.set("panic")
+	w.trigger("wake")
+	waitFor(t, "panic recorded", func() bool { st := e.state(t, act.ID); return st.State == api.StateError && st.Failures >= 1 })
+	if _, err := w.do(ctx, func(context.Context) (any, error) {
+		if w.runner != nil {
+			t.Error("runner kept after panic")
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.m.activeTriggerSets.Load(); n != 1 || stops.Load() != 0 {
+		t.Fatalf("trigger sets = %d, stops = %d; triggers must survive the panic", n, stops.Load())
+	}
+	g.set("")
+	if _, err := e.m.Sync(ctx, act.ID); err != nil {
+		t.Fatalf("sync after panic: %v", err)
+	}
+	if st := e.state(t, act.ID); st.State != api.StateIdle {
+		t.Fatalf("state = %+v", st)
+	}
+}
+
+func TestPanicWithoutActionLookupKeepsTriggers(t *testing.T) {
+	g := &gateStore{Memory: storage.NewMemory(), entered: make(chan struct{}, 1)}
+	e := newEnv(t, g, withTriggers, func(o *Options) { o.Backoff = []time.Duration{time.Hour} })
+	act, _, dir := e.newTriggeredAction(t, 1, onChange)
+	waitFor(t, "first sync", func() bool { return e.state(t, act.ID).LastOutcome == model.OutcomeOK })
+	w, _ := e.m.worker(act.ID)
+	var stops atomic.Int32
+	hook := func() { stops.Add(1) }
+	stopTriggersHook.Store(&hook)
+	t.Cleanup(func() { stopTriggersHook.Store(nil) })
+	saved, err := e.a.Action(act.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The local action row disappears just before the panic: the lookup
+	// after the panic fails, and must not tear the triggers down.
+	g.onPanic = func() { e.a.DB.DeleteAction(act.ID) }
+	os.WriteFile(filepath.Join(dir, "s00.json"), []byte("changed"), 0o644)
+	g.set("panic")
+	w.trigger("wake")
+	waitFor(t, "panic recorded", func() bool { return w.snapshot().failures >= 1 })
+	time.Sleep(200 * time.Millisecond)
+	if n := e.m.activeTriggerSets.Load(); n != 1 || stops.Load() != 0 {
+		t.Fatalf("trigger sets = %d, stops = %d; a failed lookup tore the triggers down", n, stops.Load())
+	}
+	g.set("")
+	e.a.DB.PutAction(saved)
 }

@@ -108,11 +108,19 @@ func (w *worker) refreshTriggers(a model.Action) error {
 	if w.schedBroken {
 		// The schedule was fixed: leave the error state it caused.
 		w.schedBroken = false
+		// Only an error state is left: a user pause (or conflict/deletion
+		// pause) stays.
 		w.setState(func(s *wstate) {
 			if s.permanent {
-				s.state, s.permanent, s.failures, s.lastError = api.StateIdle, false, 0, ""
+				s.permanent, s.failures, s.lastError = false, 0, ""
+				if s.state == api.StateError {
+					s.state = api.StateIdle
+				}
 			}
 		})
+	}
+	if paused, err := w.m.app.Paused(w.id); err == nil && paused {
+		return nil // resume syncs
 	}
 	if hasTriggers(a) {
 		w.trigger("rules changed")
@@ -127,7 +135,13 @@ func (w *worker) buildTriggers(a model.Action) error {
 	ts := &triggerSet{key: triggerKey(a, w.m.app.MachineID), cancel: cancel}
 	w.trig = ts
 	w.m.activeTriggerSets.Add(1)
-	sched, err := schedule.Compile(a.Triggers.Schedule)
+	// The bucket copy is authoritative and may never have been validated
+	// locally: enforce the minimum interval here too.
+	err := schedule.Validate(a.Triggers.Schedule)
+	var sched cron.Schedule
+	if err == nil {
+		sched, err = schedule.Compile(a.Triggers.Schedule)
+	}
 	if err != nil {
 		ts.err = fmt.Errorf("%w: %v", errInvalidSchedule, err)
 		w.schedBroken = true

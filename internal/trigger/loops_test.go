@@ -56,3 +56,32 @@ func TestRunPollerAndETagChecker(t *testing.T) {
 		t.Fatalf("errors reported = %d", errs.Load())
 	}
 }
+
+type fixedNext func(time.Time) time.Time
+
+func (f fixedNext) Next(t time.Time) time.Time { return f(t) }
+
+func TestRunScheduleStopsWithoutAdvancingNext(t *testing.T) {
+	for name, next := range map[string]func(time.Time) time.Time{
+		"zero": func(time.Time) time.Time { return time.Time{} },
+		"past": func(t time.Time) time.Time { return t.Add(-time.Hour) },
+		"same": func(t time.Time) time.Time { return t },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var n atomic.Int32
+			done := make(chan struct{})
+			go func() {
+				RunSchedule(context.Background(), fixedNext(next), nil, func() { n.Add(1) })
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("RunSchedule did not return")
+			}
+			if n.Load() != 0 {
+				t.Fatalf("fired %d times", n.Load())
+			}
+		})
+	}
+}

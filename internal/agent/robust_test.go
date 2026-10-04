@@ -104,6 +104,7 @@ type gateStore struct {
 	mode    string // "", "fail", "block"
 	entered chan struct{}
 	release chan struct{} // for mode "hold"
+	onPanic func()        // run just before a "panic" Put panics
 }
 
 // hold parks any storage call while mode is "hold", ignoring contexts, so a
@@ -148,6 +149,9 @@ func (g *gateStore) Put(c context.Context, key string, body []byte, meta map[str
 		case "fail":
 			return storage.Object{}, errors.New("network is down")
 		case "panic":
+			if g.onPanic != nil {
+				g.onPanic()
+			}
 			panic("storage exploded")
 		case "block":
 			select {

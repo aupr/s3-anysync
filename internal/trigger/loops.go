@@ -10,14 +10,20 @@ type Scheduler interface {
 	Next(time.Time) time.Time
 }
 
-// RunSchedule calls fire at every time sched gives, until ctx ends.
+// RunSchedule calls fire at every time sched gives, until ctx ends. It stops
+// (firing nothing more) when the schedule has no next time or one that is not
+// after now, which would otherwise make it spin.
 func RunSchedule(ctx context.Context, sched Scheduler, now func() time.Time, fire func()) {
 	if now == nil {
 		now = time.Now
 	}
 	for {
 		t := now()
-		timer := time.NewTimer(sched.Next(t).Sub(t))
+		next := sched.Next(t)
+		if next.IsZero() || !next.After(t) {
+			return
+		}
+		timer := time.NewTimer(next.Sub(t))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

@@ -263,11 +263,13 @@ func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResu
 	if w.ctx.Err() != nil {
 		return res, err // shutting down: don't record an interruption as a failure
 	}
-	a := r.Action()
+	a, aerr := r.Action(), error(nil)
 	if w.runner != r {
-		a, _ = w.m.app.Action(w.id) // the runner was discarded after a panic
+		a, aerr = w.m.app.Action(w.id) // the runner was discarded after a panic
 	}
-	if terr := w.refreshTriggers(a); terr != nil && err == nil {
+	if aerr != nil {
+		w.m.log.Warn("load action after panic", "action", w.id, "err", aerr)
+	} else if terr := w.refreshTriggers(a); terr != nil && err == nil {
 		err = terr // an invalid schedule is a permanent error of the action
 	}
 	w.afterRun(res, err)
