@@ -150,3 +150,56 @@ func TestConflictsAndHistory(t *testing.T) {
 		t.Fatalf("ListHistory = %+v, %v", h, err)
 	}
 }
+
+func TestPendingDeletesAndPause(t *testing.T) {
+	db := openTest(t)
+	if p, err := db.LoadPendingDeletes("a1"); err != nil || p != nil {
+		t.Fatalf("empty: %+v %v", p, err)
+	}
+	want := &model.PendingDeletes{Paths: []string{"x", "y"}, Approved: true, DetectedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
+	if err := db.SavePendingDeletes("a1", want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LoadPendingDeletes("a1")
+	if err != nil || got == nil || len(got.Paths) != 2 || !got.Approved || !got.DetectedAt.Equal(want.DetectedAt) {
+		t.Fatalf("loaded %+v %v", got, err)
+	}
+	if err := db.SavePendingDeletes("a1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.LoadPendingDeletes("a1"); got != nil {
+		t.Fatal("nil did not clear pending deletes")
+	}
+	if p, _ := db.Paused("a1"); p {
+		t.Fatal("paused by default")
+	}
+	db.SetPaused("a1", true)
+	if p, _ := db.Paused("a1"); !p {
+		t.Fatal("pause not stored")
+	}
+	db.SetPaused("a1", false)
+	if p, _ := db.Paused("a1"); p {
+		t.Fatal("pause not cleared")
+	}
+}
+
+func TestDeleteActionClearsActionState(t *testing.T) {
+	db := openTest(t)
+	db.PutProfile(model.Profile{ID: "p1", Name: "p", Bucket: "b"})
+	a := model.Action{ID: "a1", Name: "x", ProfileID: "p1"}
+	a.ApplyDefaults()
+	if err := db.PutAction(a); err != nil {
+		t.Fatal(err)
+	}
+	db.SetPaused("a1", true)
+	db.SavePendingDeletes("a1", &model.PendingDeletes{Paths: []string{"x"}})
+	if err := db.DeleteAction("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := db.Paused("a1"); p {
+		t.Fatal("pause flag survived DeleteAction")
+	}
+	if got, _ := db.LoadPendingDeletes("a1"); got != nil {
+		t.Fatal("pending deletes survived DeleteAction")
+	}
+}

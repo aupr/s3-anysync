@@ -145,3 +145,44 @@ func TestSummaryDeferred(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestDeleteGuardDefaultsAndValidation(t *testing.T) {
+	var a Action
+	a.ApplyDefaults()
+	if a.DeleteGuardMinFiles != 5 || a.DeleteGuardPercent != 50 {
+		t.Fatalf("delete guard defaults = %d/%d", a.DeleteGuardMinFiles, a.DeleteGuardPercent)
+	}
+	for _, tc := range []struct{ min, pct int }{{5, 0}, {5, 101}, {0, 50}} {
+		v := validAction()
+		v.DeleteGuardMinFiles, v.DeleteGuardPercent = tc.min, tc.pct
+		if err := v.Validate(); err == nil || !strings.Contains(err.Error(), "delete guard") {
+			t.Errorf("min=%d pct=%d: want delete guard error, got %v", tc.min, tc.pct, err)
+		}
+	}
+}
+
+func TestSummaryExtras(t *testing.T) {
+	r := SyncResult{PendingDeletes: []string{"a"}, Unsupported: []string{"b", "c"}}
+	want := "uploaded 0, downloaded 0, deleted in cloud 0, deleted locally 0, adopted 0, conflicts 0, pending deletions 1, unsupported 2"
+	if got := r.Summary(); got != want {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRulesRoundTrip(t *testing.T) {
+	a := validAction()
+	a.Encrypt = true
+	r := a.Rules()
+	r.Name = "Renamed"
+	r.Excludes = []string{"*.log"}
+	r.Triggers.OnChange = true
+	r.Triggers.DebounceSeconds = 0 // defaulted again by ApplyRules
+	r.DeleteGuardPercent = 80
+	a.ApplyRules(r)
+	if a.Name != "Renamed" || a.Excludes[0] != "*.log" || !a.Triggers.OnChange || a.Triggers.DebounceSeconds != DefaultDebounceSeconds || a.DeleteGuardPercent != 80 {
+		t.Fatalf("rules not applied: %+v", a)
+	}
+	if a.ID != "a1" || len(a.Items) != 2 || !a.Encrypt {
+		t.Fatal("ApplyRules changed identity, items or encryption")
+	}
+}

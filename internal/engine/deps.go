@@ -44,6 +44,8 @@ type Repo interface {
 	SaveConflicts(actionID string, conflicts []model.Conflict) error
 	LoadConflicts(actionID string) ([]model.Conflict, error)
 	AddHistory(h model.HistoryEntry) error
+	SavePendingDeletes(actionID string, p *model.PendingDeletes) error
+	LoadPendingDeletes(actionID string) (*model.PendingDeletes, error)
 }
 
 // Deps is everything a Runner needs for one action on this machine.

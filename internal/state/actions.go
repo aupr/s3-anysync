@@ -87,5 +87,11 @@ func (d *DB) DeleteAction(id string) error {
 			return err
 		}
 	}
+	for _, key := range []string{settingPendingDeletesPrefix + id, settingPausedPrefix + id} {
+		if _, err := tx.Exec(`DELETE FROM settings WHERE key = ?`, key); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
 	return tx.Commit()
 }

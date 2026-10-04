@@ -47,9 +47,11 @@ const (
 
 // Defaults from the design spec.
 const (
-	DefaultDebounceSeconds   = 3
-	DefaultRemotePollMinutes = 5
-	DefaultSnapshotRetention = 20
+	DefaultDebounceSeconds     = 3
+	DefaultRemotePollMinutes   = 5
+	DefaultSnapshotRetention   = 20
+	DefaultDeleteGuardMinFiles = 5
+	DefaultDeleteGuardPercent  = 50
 )
 
 // Profile is an S3 connection. The secret key lives in the keychain.
@@ -105,13 +107,18 @@ type Action struct {
 	// ReceiverRestoresCloud: when PropagateDeletes is off and the cloud deleted a
 	// file that a cloud-to-local machine still has, false leaves it alone (such a
 	// machine never writes to the cloud); true uploads the local copy back.
-	ReceiverRestoresCloud bool              `json:"receiverRestoresCloud"`
-	Encrypt               bool              `json:"encrypt"`
-	Excludes              []string          `json:"excludes"`
-	SnapshotRetention     int               `json:"snapshotRetention"`
-	Items                 []Item            `json:"items"`
-	Machines              map[string]string `json:"machines"`
-	UpdatedAt             time.Time         `json:"updatedAt"`
+	ReceiverRestoresCloud bool     `json:"receiverRestoresCloud"`
+	Encrypt               bool     `json:"encrypt"`
+	Excludes              []string `json:"excludes"`
+	SnapshotRetention     int      `json:"snapshotRetention"`
+	// DeleteGuardMinFiles and DeleteGuardPercent: a run that would delete at
+	// least DeleteGuardMinFiles files AND at least DeleteGuardPercent percent
+	// of the files synced so far pauses until the deletions are approved.
+	DeleteGuardMinFiles int               `json:"deleteGuardMinFiles"`
+	DeleteGuardPercent  int               `json:"deleteGuardPercent"`
+	Items               []Item            `json:"items"`
+	Machines            map[string]string `json:"machines"`
+	UpdatedAt           time.Time         `json:"updatedAt"`
 }
 
 // DirectionFor returns the machine's override, or the action default.
@@ -139,6 +146,12 @@ func (a *Action) ApplyDefaults() {
 	}
 	if a.SnapshotRetention <= 0 {
 		a.SnapshotRetention = DefaultSnapshotRetention
+	}
+	if a.DeleteGuardMinFiles <= 0 {
+		a.DeleteGuardMinFiles = DefaultDeleteGuardMinFiles
+	}
+	if a.DeleteGuardPercent <= 0 {
+		a.DeleteGuardPercent = DefaultDeleteGuardPercent
 	}
 	if a.Machines == nil {
 		a.Machines = map[string]string{}
@@ -176,6 +189,9 @@ func (a Action) Validate() error {
 	}
 	if a.SnapshotRetention < 1 {
 		return errors.New("snapshot retention must be at least 1")
+	}
+	if a.DeleteGuardMinFiles < 1 || a.DeleteGuardPercent < 1 || a.DeleteGuardPercent > 100 {
+		return errors.New("delete guard needs at least 1 file and a percent between 1 and 100")
 	}
 	ids := map[string]bool{}
 	var names []string
@@ -263,21 +279,25 @@ type SnapshotInfo struct {
 	MachineID string      `json:"machineId"`
 	CreatedAt time.Time   `json:"createdAt"`
 	Files     []FileEntry `json:"files"`
+	// Deletes lists the files of this snapshot that were about to be deleted.
+	Deletes []string `json:"deletes,omitempty"`
 }
 
 // Run outcomes.
 const (
-	OutcomeOK       = "ok"
-	OutcomeConflict = "conflict"
-	OutcomeError    = "error"
+	OutcomeOK             = "ok"
+	OutcomeConflict       = "conflict"
+	OutcomeError          = "error"
+	OutcomeDeletesPending = "deletes-pending"
 )
 
 // History kinds.
 const (
-	HistorySync     = "sync"
-	HistoryResolve  = "resolve"
-	HistorySnapshot = "snapshot"
-	HistoryRestore  = "restore"
+	HistorySync           = "sync"
+	HistoryResolve        = "resolve"
+	HistorySnapshot       = "snapshot"
+	HistoryRestore        = "restore"
+	HistoryApproveDeletes = "approve-deletes"
 )
 
 // SyncResult reports what one sync run did.
@@ -292,6 +312,12 @@ type SyncResult struct {
 	// Deferred lists paths skipped because the local file changed while the
 	// sync ran; the next run plans them again.
 	Deferred []string `json:"deferred"`
+	// PendingDeletes lists the deletions held back by the delete guard
+	// (Outcome is OutcomeDeletesPending; nothing was applied).
+	PendingDeletes []string `json:"pendingDeletes"`
+	// Unsupported lists cloud files whose names cannot exist on this OS;
+	// they are not synced to this machine.
+	Unsupported []string `json:"unsupported"`
 }
 
 // Summary is a one-line human description of the counts.
@@ -300,6 +326,12 @@ func (r SyncResult) Summary() string {
 		r.Uploaded, r.Downloaded, r.DeletedRemote, r.DeletedLocal, r.Adopted, len(r.Conflicts))
 	if len(r.Deferred) > 0 {
 		s += fmt.Sprintf(", deferred %d", len(r.Deferred))
+	}
+	if len(r.PendingDeletes) > 0 {
+		s += fmt.Sprintf(", pending deletions %d", len(r.PendingDeletes))
+	}
+	if len(r.Unsupported) > 0 {
+		s += fmt.Sprintf(", unsupported %d", len(r.Unsupported))
 	}
 	return s
 }
@@ -313,4 +345,50 @@ type HistoryEntry struct {
 	FinishedAt time.Time `json:"finishedAt"`
 	Outcome    string    `json:"outcome"`
 	Message    string    `json:"message"`
+}
+
+// Rules are the settings of an action a user can edit after creating it:
+// everything except its identity, items, per-machine paths and directions,
+// and encryption (fixed at creation).
+type Rules struct {
+	Name                  string    `json:"name"`
+	Direction             Direction `json:"direction"`
+	Triggers              Triggers  `json:"triggers"`
+	PropagateDeletes      bool      `json:"propagateDeletes"`
+	ReceiverRestoresCloud bool      `json:"receiverRestoresCloud"`
+	Excludes              []string  `json:"excludes"`
+	SnapshotRetention     int       `json:"snapshotRetention"`
+	DeleteGuardMinFiles   int       `json:"deleteGuardMinFiles"`
+	DeleteGuardPercent    int       `json:"deleteGuardPercent"`
+}
+
+// Rules returns the action's editable settings.
+func (a Action) Rules() Rules {
+	return Rules{
+		Name: a.Name, Direction: a.Direction, Triggers: a.Triggers,
+		PropagateDeletes: a.PropagateDeletes, ReceiverRestoresCloud: a.ReceiverRestoresCloud,
+		Excludes: append([]string(nil), a.Excludes...), SnapshotRetention: a.SnapshotRetention,
+		DeleteGuardMinFiles: a.DeleteGuardMinFiles, DeleteGuardPercent: a.DeleteGuardPercent,
+	}
+}
+
+// ApplyRules overwrites the editable settings and re-applies defaults.
+func (a *Action) ApplyRules(r Rules) {
+	a.Name = r.Name
+	a.Direction = r.Direction
+	a.Triggers = r.Triggers
+	a.PropagateDeletes = r.PropagateDeletes
+	a.ReceiverRestoresCloud = r.ReceiverRestoresCloud
+	a.Excludes = append([]string(nil), r.Excludes...)
+	a.SnapshotRetention = r.SnapshotRetention
+	a.DeleteGuardMinFiles = r.DeleteGuardMinFiles
+	a.DeleteGuardPercent = r.DeleteGuardPercent
+	a.ApplyDefaults()
+}
+
+// PendingDeletes are deletions held back by the delete guard of one action.
+type PendingDeletes struct {
+	Paths      []string  `json:"paths"`
+	Approved   bool      `json:"approved"`
+	DetectedAt time.Time `json:"detectedAt"`
 }
