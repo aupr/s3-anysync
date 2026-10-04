@@ -12,7 +12,7 @@ Out of scope: code signing and notarization, auto-update, Linux, CI.
 
 - Builds run on this Mac; Windows artifacts are cross-built (CGO off) and the installer is compiled with `makensis` (`brew install makensis`, approved).
 - Windows uses two executables built from `cmd/agent`: `s3-anysync-agent.exe` (`-H=windowsgui`, no console; used for `run`, login and by the GUI) and `s3-anysync-cli.exe` (console; every other command).
-- macOS: one universal `.app` (arm64 + amd64), minimum macOS 11.0, distributed as DMG (drag to Applications) and ZIP.
+- macOS: one universal `.app` (arm64 + amd64), minimum macOS 13.0, distributed as DMG (drag to Applications) and ZIP.
 - Identity: bundle id `com.niceit.s3-anysync`, product name `s3-anysync`, company `niceit`; a generated placeholder icon (cloud with sync arrows) the user can replace.
 - macOS CLI: documented symlink, no installer step touches system paths.
 - Version: `git describe --tags --exact-match` (`v0.1.0` → `0.1.0`), else `0.0.0-dev+<short sha>`; no tag is created without the user's go-ahead.
@@ -24,8 +24,8 @@ Out of scope: code signing and notarization, auto-update, Linux, CI.
 - Frontend built once (`npm ci && npm run build`).
 - macOS:
   - GUI: `wails build -platform darwin/universal -ldflags ...` → `cmd/gui/build/bin/s3-anysync.app`.
-  - Agent: `CGO_ENABLED=1 GOOS=darwin GOARCH=arm64` and `GOARCH=amd64` (clang `-arch x86_64`, `CGO_CFLAGS/LDFLAGS -mmacosx-version-min=11.0`), `MACOSX_DEPLOYMENT_TARGET=11.0`, joined with `lipo -create` into `Contents/MacOS/s3-anysync-agent`.
-  - `Info.plist`: bundle id, name, versions, `LSMinimumSystemVersion` 11.0, icon.
+  - Agent: `CGO_ENABLED=1 GOOS=darwin GOARCH=arm64` and `GOARCH=amd64` (clang `-arch x86_64`, `CGO_CFLAGS/LDFLAGS -mmacosx-version-min=13.0`), `MACOSX_DEPLOYMENT_TARGET=13.0`, joined with `lipo -create` into `Contents/MacOS/s3-anysync-agent`.
+  - `Info.plist`: bundle id, name, versions, `LSMinimumSystemVersion` 13.0, icon.
   - DMG via `hdiutil create` (contents: the .app and an `Applications` symlink); ZIP via `ditto -c -k --keepParent`.
 - Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0`):
   - `s3-anysync.exe` GUI via `wails build -platform windows/amd64` (cross-compiled, no `-nsis`); the installer is the project's own NSIS script (section 5), compiled with `makensis`, not the Wails default.
@@ -77,3 +77,7 @@ Out of scope: code signing and notarization, auto-update, Linux, CI.
 5. Windows builds + NSIS per-user installer (+ resources).
 6. `verify-dist.sh` + `pecheck`; SHA256SUMS.
 7. INSTALL.md, RELEASE.md, README updates; full release dry run (untagged dev version) and verification.
+
+## 10. Amendment: minimum macOS 13 (2026-10-04)
+
+The Go 1.27.1 toolchain builds binaries whose runtime needs macOS 13 (Ventura): the linker reports its object files target macOS 13.0. The user chose to declare macOS 13.0 as the minimum (instead of the originally stated 11.0). `LSMinimumSystemVersion`, `-mmacosx-version-min` / `MACOSX_DEPLOYMENT_TARGET`, `verify-dist.sh` and the docs all say 13.0.

@@ -29,8 +29,8 @@ log "frontend"
 
 build_mac() {
   need lipo hdiutil ditto codesign /usr/libexec/PlistBuddy
-  local flags="-mmacosx-version-min=11.0"
-  export MACOSX_DEPLOYMENT_TARGET=11.0
+  local flags="-mmacosx-version-min=13.0"
+  export MACOSX_DEPLOYMENT_TARGET=13.0
   log "macOS GUI (universal)"
   (cd cmd/gui && CGO_CFLAGS="$flags" CGO_LDFLAGS="$flags" \
     "$WAILS" build -clean -platform darwin/universal -ldflags "$LDVER" -s)

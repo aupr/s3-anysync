@@ -15,7 +15,7 @@
 - Module `github.com/niceit/s3-anysync`; Go at `/opt/homebrew/bin/go`; work and commit on `main` (user-approved). Every commit ends with a `Co-Authored-By:` trailer line naming the implementing model (the dispatch gives it).
 - After every task these must pass: `go test -count=1 -race ./...`, `go vet ./...`, `gofmt -l .` (empty), `CGO_ENABLED=0 go build ./...`, `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go vet ./...`, and `cd frontend && npm run typecheck && npm test -- --run`.
 - NEVER launch a built app, GUI or agent from `dist/` or `cmd/gui/build/bin/` (it would use the real data folder, Keychain and login items). NEVER run the Windows installer. NEVER create git tags. Tests are hermetic (temp dirs, memory secrets, fake autostart; never call Enable/Disable on a real autostart manager).
-- Identity: bundle id `com.niceit.s3-anysync`; product name `s3-anysync`; company `niceit`; minimum macOS `11.0`.
+- Identity: bundle id `com.niceit.s3-anysync`; product name `s3-anysync`; company `niceit`; minimum macOS `13.0`.
 - Version: `git describe --tags --exact-match` → `vX.Y.Z` gives `X.Y.Z`; otherwise `0.0.0-dev+<git rev-parse --short HEAD>`. Numeric form (plist, Windows resources, NSIS) is the part before `-`, with `.0` appended for 4-part Windows versions.
 - Windows executables: `s3-anysync.exe` (GUI), `s3-anysync-agent.exe` (`-H=windowsgui`, role `agent`), `s3-anysync-cli.exe` (console, role `cli`). Windows builds are `CGO_ENABLED=0`.
 - Outputs in `dist/` (gitignored): `s3-anysync-<ver>-macos-universal.dmg`, `s3-anysync-<ver>-macos-universal.zip`, `s3-anysync-<ver>-windows-amd64-installer.exe`, `SHA256SUMS`.
@@ -211,7 +211,7 @@ Check: `scripts/version.sh` prints `0.0.0-dev+<sha>` and `0.0.0` (no tag exists;
     "comments": "Sync application settings through S3"
   }
 ```
-`cmd/gui/build/darwin/Info.plist`: `CFBundleIdentifier` → `com.niceit.s3-anysync` (replace `com.wails.{{safeBundleID .Name}}`), `LSMinimumSystemVersion` → `11.0`. Leave the rest (the release script sets the version keys with PlistBuddy).
+`cmd/gui/build/darwin/Info.plist`: `CFBundleIdentifier` → `com.niceit.s3-anysync` (replace `com.wails.{{safeBundleID .Name}}`), `LSMinimumSystemVersion` → `13.0`. Leave the rest (the release script sets the version keys with PlistBuddy).
 
 - [ ] **Step 5: GUI version.** Failing test first in `internal/gui/gui_test.go`: `NewApp(NewConn(ConnOptions{}), nil, "/data", "1.2.3").Version() == "1.2.3"`. Then: `internal/gui/app.go` adds field `version string`, `NewApp(conn *Conn, dlg Dialogs, dataDir, version string) *App`, and
 ```go
@@ -578,7 +578,7 @@ log "frontend"
 
 build_mac() {
   need lipo hdiutil ditto codesign /usr/libexec/PlistBuddy
-  export MACOSX_DEPLOYMENT_TARGET=11.0
+  export MACOSX_DEPLOYMENT_TARGET=13.0
   log "macOS GUI (universal)"
   (cd cmd/gui && "$WAILS" build -clean -platform darwin/universal -ldflags "$LDVER" -s)
   local app=$STAGE/mac/s3-anysync.app
@@ -586,7 +586,7 @@ build_mac() {
   ditto cmd/gui/build/bin/s3-anysync.app "$app"
 
   log "macOS agent (arm64 + amd64)"
-  local flags="-mmacosx-version-min=11.0"
+  local flags="-mmacosx-version-min=13.0"
   CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CGO_CFLAGS="$flags" CGO_LDFLAGS="$flags" \
     go build -trimpath -ldflags "$LDVER" -o "$STAGE/agent-arm64" ./cmd/agent
   CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" CGO_CFLAGS="$flags" CGO_LDFLAGS="$flags" \
@@ -627,7 +627,7 @@ log "done: $DIST"
 ```
 (The `version` variable of the agent lives in `cmd/agent/connect.go` as `var version = "dev"`; `-X main.version` sets it. The final `verify-dist.sh` call is a no-op until Task 6 adds the script.)
 
-- [ ] **Step 3: Run** `scripts/release.sh --mac-only`. Expected: `dist/s3-anysync-0.0.0-dev+<sha>-macos-universal.dmg` and `.zip`, `dist/SHA256SUMS`. Check by hand (no launching): `lipo -archs` on both `Contents/MacOS` binaries prints `x86_64 arm64`; `plutil -p .../Info.plist` shows `com.niceit.s3-anysync`, `11.0`, version `0.0.0`; `codesign --verify --deep --strict` on the staged app before it is removed (or on a copy extracted from the zip in a temp dir) succeeds. If the amd64 CGO build fails (e.g. clang cannot target x86_64), report BLOCKED with the exact error. The wails universal build must also honour 11.0 (check `vtool -show-build` or `otool -l | grep -A3 LC_BUILD_VERSION` minos on both slices of `Contents/MacOS/s3-anysync`); if Wails ignores `MACOSX_DEPLOYMENT_TARGET`, pass `CGO_CFLAGS`/`CGO_LDFLAGS` `-mmacosx-version-min=11.0` in the environment of the wails call too, and report.
+- [ ] **Step 3: Run** `scripts/release.sh --mac-only`. Expected: `dist/s3-anysync-0.0.0-dev+<sha>-macos-universal.dmg` and `.zip`, `dist/SHA256SUMS`. Check by hand (no launching): `lipo -archs` on both `Contents/MacOS` binaries prints `x86_64 arm64`; `plutil -p .../Info.plist` shows `com.niceit.s3-anysync`, `13.0`, version `0.0.0`; `codesign --verify --deep --strict` on the staged app before it is removed (or on a copy extracted from the zip in a temp dir) succeeds. If the amd64 CGO build fails (e.g. clang cannot target x86_64), report BLOCKED with the exact error. The wails universal build must also honour 13.0 (check `vtool -show-build` or `otool -l | grep -A3 LC_BUILD_VERSION` minos on both slices of `Contents/MacOS/s3-anysync`); if Wails ignores `MACOSX_DEPLOYMENT_TARGET`, pass `CGO_CFLAGS`/`CGO_LDFLAGS` `-mmacosx-version-min=13.0` in the environment of the wails call too, and report.
 - [ ] **Step 4:** `.gitignore`: `/dist/`. Commit (`git add scripts .gitignore`; message `build: release script for the universal macOS app`).
 
 ---
@@ -901,7 +901,7 @@ if [[ -f $zip ]]; then
   pl() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Contents/Info.plist" 2>/dev/null; }
   [[ $(pl CFBundleIdentifier) == com.niceit.s3-anysync ]] && ok "bundle id" || bad "bundle id $(pl CFBundleIdentifier)"
   [[ $(pl CFBundleShortVersionString) == "$NUMERIC" ]] && ok "version $NUMERIC" || bad "version $(pl CFBundleShortVersionString)"
-  [[ $(pl LSMinimumSystemVersion) == 11.0 ]] && ok "minimum macOS 11.0" || bad "minimum macOS $(pl LSMinimumSystemVersion)"
+  [[ $(pl LSMinimumSystemVersion) == 13.0 ]] && ok "minimum macOS 13.0" || bad "minimum macOS $(pl LSMinimumSystemVersion)"
   check "bundle signature (ad-hoc)" codesign --verify --deep --strict "$app"
 else
   bad "missing $zip"
