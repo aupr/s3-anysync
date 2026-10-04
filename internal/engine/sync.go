@@ -156,6 +156,30 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 		return model.SyncResult{Outcome: model.OutcomeConflict, Conflicts: conflicts}, false, nil
 	}
 
+	resolved := map[string]bool{}
+	if overrides != nil {
+		for p := range conflictOps {
+			resolved[p] = true
+		}
+	}
+	pending, err := r.d.Repo.LoadPendingDeletes(id)
+	if err != nil {
+		return model.SyncResult{}, false, fmt.Errorf("load pending deletions: %w", err)
+	}
+	if del := massDeletes(ops, resolved, len(baseline), r.action); del == nil {
+		if pending != nil {
+			if err := r.d.Repo.SavePendingDeletes(id, nil); err != nil {
+				return model.SyncResult{}, false, err
+			}
+			pending = nil
+		}
+	} else if !covers(pending, del) {
+		if err := r.d.Repo.SavePendingDeletes(id, &model.PendingDeletes{Paths: del, DetectedAt: now}); err != nil {
+			return model.SyncResult{}, false, fmt.Errorf("save pending deletions: %w", err)
+		}
+		return model.SyncResult{Outcome: model.OutcomeDeletesPending, PendingDeletes: del}, false, nil
+	}
+
 	opCtx := ctx
 	if hasWrites(ops) {
 		held, release, err := r.d.holdLock(ctx, r.layout)
@@ -183,6 +207,11 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 	res, err := r.apply(opCtx, ms, ops, baseline, &manifest)
 	if err != nil {
 		return res, false, err
+	}
+	if pending != nil {
+		if err := r.d.Repo.SavePendingDeletes(id, nil); err != nil {
+			return res, false, fmt.Errorf("clear pending deletions: %w", err)
+		}
 	}
 	// Conflicts whose chosen side could not be applied (the local file changed
 	// meanwhile) stay saved so they keep showing up.
