@@ -94,6 +94,9 @@ export function SettingsScreen() {
         <Field label="Machine name" hint="Shown to the other machines of your actions.">
           <Input aria-label="Machine name" value={form.machineName} onChange={(e) => change({ machineName: e.target.value })} />
         </Field>
+        {!form.autostartSupported && (
+          <p className="text-xs text-zinc-500">Start at login is not available here (unsupported system, or a development data folder is in use).</p>
+        )}
         {form.autostartSupported && (
           <div>
             <Checkbox label="Start the agent when I log in" checked={form.autostart} onChange={(v) => change({ autostart: v })} />

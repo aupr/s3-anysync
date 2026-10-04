@@ -329,3 +329,10 @@ test('cancel stays enabled while the sync started from the same row is pending',
   fireEvent.click(cancel)
   await waitFor(() => expect(bindings.CancelSync).toHaveBeenCalledWith('a1'))
 })
+
+test('a running action shows a Running badge instead of its state', async () => {
+  boot([action({ state: 'idle', running: true })])
+  const row = (await screen.findByText('Editor')).closest('tr')!
+  expect(within(row).getAllByText('Running').length).toBeGreaterThan(0)
+  expect(within(row).queryByText('Idle')).toBeNull()
+})

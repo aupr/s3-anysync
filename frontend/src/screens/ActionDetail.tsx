@@ -32,7 +32,7 @@ export function ActionDetail({ id, tab }: { id: string; tab: Tab }) {
       <div className="flex items-center gap-3">
         <button type="button" className="text-sm text-zinc-500 hover:underline" onClick={() => navigate({ name: 'actions' })}>Actions /</button>
         <h1 className="text-xl font-semibold">{st.action.name}</h1>
-        <Badge tone={stateTone(st.state)}>{stateLabels[st.state]}</Badge>
+        <Badge tone={st.running ? 'neutral' : stateTone(st.state)}>{st.running ? 'Running' : stateLabels[st.state]}</Badge>
       </div>
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {tabs.map((t) => (

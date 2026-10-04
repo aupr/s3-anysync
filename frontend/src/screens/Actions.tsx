@@ -58,7 +58,7 @@ export function Actions() {
                     {a.action.encrypt && <span className="ml-2 text-xs text-zinc-500">encrypted</span>}
                   </td>
                   <td className={`${td} space-y-1`}>
-                    <div className="flex items-center gap-2"><Badge tone={stateTone(a.state)}>{stateLabels[a.state]}</Badge>{a.running && <Spinner label="Running" />}</div>
+                    <div className="flex items-center gap-2"><Badge tone={a.running ? 'neutral' : stateTone(a.state)}>{a.running ? 'Running' : stateLabels[a.state]}</Badge>{a.running && <Spinner label="Running" />}</div>
                     {a.conflicts > 0 && <button type="button" className="block text-xs text-amber-700 underline" onClick={() => navigate({ name: 'conflicts', id })}>{a.conflicts} conflicts</button>}
                     {a.pendingDeletes > 0 && <button type="button" className="block text-xs text-amber-700 underline" onClick={() => navigate({ name: 'deletes', id })}>{a.pendingDeletes} deletions to review</button>}
                   </td>

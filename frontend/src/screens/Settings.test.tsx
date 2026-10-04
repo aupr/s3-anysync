@@ -190,3 +190,11 @@ test('the machine name is trimmed when sent and in the dirty comparison', async 
   fireEvent.click(screen.getByText('Save'))
   await waitFor(() => expect(bindings.UpdateSettings).toHaveBeenCalledWith({ ...base, machineName: 'studio' }))
 })
+
+test('settings: an unsupported autostart shows a note instead of the checkbox', async () => {
+  boot()
+  bindings.Settings.mockResolvedValue({ ...base, autostartSupported: false })
+  await openSettings()
+  expect(await screen.findByText('Start at login is not available here (unsupported system, or a development data folder is in use).')).toBeInTheDocument()
+  expect(screen.queryByLabelText('Start the agent when I log in')).toBeNull()
+})

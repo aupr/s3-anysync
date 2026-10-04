@@ -215,3 +215,10 @@ test('leave: ends on the Actions list even when the refresh already dropped the 
   expect(screen.queryByText('This action no longer exists on this machine.')).not.toBeInTheDocument()
   r.unmount()
 })
+
+test('the detail header badge says Running while a run is in progress', async () => {
+  await open(st({ state: 'idle', running: true }))
+  const header = screen.getByRole('heading', { name: 'Editor' }).parentElement!
+  expect(within(header).getByText('Running')).toBeInTheDocument()
+  expect(within(header).queryByText('Idle')).toBeNull()
+})
