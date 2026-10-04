@@ -149,7 +149,7 @@ func TestConnectsAndForwardsEvents(t *testing.T) {
 	f := newFake()
 	c, rec := start(t, func() (Client, error) { return f, nil }, nil)
 	waitFor(t, "connected", func() bool { return rec.find(connected(true)) })
-	a := NewApp(c, nil, "/data")
+	a := NewApp(c, nil, "/data", "dev")
 	if st, err := a.Status(); err != nil || st.MachineName != "mac" {
 		t.Fatalf("Status = %+v, %v", st, err)
 	}
@@ -203,7 +203,7 @@ func TestAgentThatNeverStarts(t *testing.T) {
 	}
 	c.Retry()
 	waitFor(t, "explicit retry launches again", func() bool { return launched.Load() == 2 })
-	a := NewApp(c, nil, "/data")
+	a := NewApp(c, nil, "/data", "dev")
 	if _, err := a.Status(); decodeErr(t, err).Code != "unreachable" {
 		t.Fatalf("Status while down: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestTransportErrorDropsTheSession(t *testing.T) {
 	f.err = &url.Error{Op: "Get", URL: "http://agent/status", Err: errors.New("connection refused")}
 	c, rec := start(t, func() (Client, error) { return f, nil }, nil)
 	waitFor(t, "connected", func() bool { return rec.find(connected(true)) })
-	a := NewApp(c, nil, "/data")
+	a := NewApp(c, nil, "/data", "dev")
 	if _, err := a.Status(); decodeErr(t, err).Code != "unreachable" {
 		t.Fatalf("Status = %v", err)
 	}
@@ -390,7 +390,7 @@ func TestBindingsCoverTheService(t *testing.T) {
 }
 
 func TestPreviewSchedule(t *testing.T) {
-	a := NewApp(NewConn(ConnOptions{}), nil, "/data")
+	a := NewApp(NewConn(ConnOptions{}), nil, "/data", "dev")
 	a.now = func() time.Time { return time.Date(2026, 10, 4, 8, 0, 0, 0, time.Local) }
 	runs, err := a.PreviewSchedule(model.Schedule{Kind: model.ScheduleInterval, EveryMinutes: 15})
 	if err != nil || len(runs) != 3 {
@@ -423,7 +423,7 @@ func (d *fakeDialogs) PickFolder(title string) (string, error) {
 
 func TestLocalHelpers(t *testing.T) {
 	d := &fakeDialogs{}
-	a := NewApp(NewConn(ConnOptions{}), d, "/data")
+	a := NewApp(NewConn(ConnOptions{}), d, "/data", "dev")
 	var opened []string
 	a.open = func(p string) error { opened = append(opened, p); return nil }
 	if p, err := a.PickFolder("Pick folder"); err != nil || p != "/d" {
@@ -446,5 +446,11 @@ func TestLocalHelpers(t *testing.T) {
 	}
 	if a.DataDir() != "/data" {
 		t.Fatal(a.DataDir())
+	}
+}
+
+func TestVersion(t *testing.T) {
+	if got := NewApp(NewConn(ConnOptions{}), nil, "/data", "1.2.3").Version(); got != "1.2.3" {
+		t.Fatalf("Version = %q", got)
 	}
 }

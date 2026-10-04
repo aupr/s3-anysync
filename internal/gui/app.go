@@ -25,14 +25,18 @@ type App struct {
 	conn    *Conn
 	dlg     Dialogs
 	dataDir string
+	version string
 	open    func(path string) error
 	now     func() time.Time
 }
 
 // NewApp returns the bound object.
-func NewApp(conn *Conn, dlg Dialogs, dataDir string) *App {
-	return &App{conn: conn, dlg: dlg, dataDir: dataDir, open: OpenPath, now: time.Now}
+func NewApp(conn *Conn, dlg Dialogs, dataDir, version string) *App {
+	return &App{conn: conn, dlg: dlg, dataDir: dataDir, version: version, open: OpenPath, now: time.Now}
 }
+
+// Version is the GUI's build version.
+func (a *App) Version() string { return a.version }
 
 // do calls the agent. Calls are not cut short by the GUI: a sync may take long.
 func do[T any](a *App, f func(ctx context.Context, s api.Service) (T, error)) (T, error) {

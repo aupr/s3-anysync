@@ -19,6 +19,8 @@ export function SettingsScreen() {
   const toast = useToast()
   const { data: fetched, error: loadError, reload } = useLoad(() => api.settings(), describe, [])
   const { data: dir } = useLoad(() => api.dataDir(), describe, [])
+  // A failed lookup just leaves the dash: no toast.
+  const { data: appVersion } = useLoad(() => api.version(), describe, [])
   // saved: the value the agent returned for the last successful save;
   // edit: the unsaved form, null while nothing was changed.
   const [saved, setSaved] = useState<Settings | null>(null)
@@ -113,6 +115,7 @@ export function SettingsScreen() {
       <Button variant="primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</Button>
       <dl className="grid grid-cols-[10rem_1fr] gap-y-1 border-t border-zinc-200 pt-4 text-sm dark:border-zinc-800">
         <dt className="text-zinc-500">Machine ID</dt><dd className="font-mono text-xs">{form.machineId}</dd>
+        <dt className="text-zinc-500">App version</dt><dd>{appVersion || '—'}</dd>
         <dt className="text-zinc-500">Agent version</dt><dd>{state.status?.version ?? '—'}</dd>
         <dt className="text-zinc-500">Data folder</dt>
         <dd>

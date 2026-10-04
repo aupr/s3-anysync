@@ -42,6 +42,7 @@ const orEmpty = <T,>(v: T[] | null | undefined): T[] => v ?? []
 export const api = {
   status: () => call<Status>('Status'),
   settings: () => call<Settings>('Settings'),
+  version: () => call<string>('Version'),
   updateSettings: (s: Settings) => call<Settings>('UpdateSettings', s),
   profiles: () => call<Profile[] | null>('Profiles').then(orEmpty),
   addProfile: (profile: Profile, secret: string) => call<Profile>('AddProfile', { profile, secret }),

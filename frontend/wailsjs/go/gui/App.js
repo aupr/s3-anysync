@@ -165,3 +165,7 @@ export function UpdateRules(arg1, arg2) {
 export function UpdateSettings(arg1) {
   return window['go']['gui']['App']['UpdateSettings'](arg1);
 }
+
+export function Version() {
+  return window['go']['gui']['App']['Version']();
+}

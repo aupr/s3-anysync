@@ -198,3 +198,23 @@ test('settings: an unsupported autostart shows a note instead of the checkbox', 
   expect(await screen.findByText('Start at login is not available here (unsupported system, or a development data folder is in use).')).toBeInTheDocument()
   expect(screen.queryByLabelText('Start the agent when I log in')).toBeNull()
 })
+
+test('settings shows the app version', async () => {
+  boot()
+  bindings.Settings.mockResolvedValue(base)
+  bindings.Version.mockResolvedValue('1.2.3')
+  await openSettings()
+  expect(await screen.findByText('1.2.3')).toBeInTheDocument()
+})
+
+test('a failing version lookup shows a dash and no toast', async () => {
+  boot()
+  bindings.Settings.mockResolvedValue(base)
+  bindings.Version.mockRejectedValue('boom')
+  await openSettings()
+  expect(await screen.findByText('App version')).toBeInTheDocument()
+  await waitFor(() => expect(bindings.Version).toHaveBeenCalled())
+  expect(screen.getByText('App version').nextElementSibling).toHaveTextContent('—')
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.queryByText('boom')).toBeNull()
+})

@@ -87,3 +87,5 @@ export function UpdateProfile(arg1:api.UpdateProfileRequest):Promise<model.Profi
 export function UpdateRules(arg1:string,arg2:api.UpdateRulesRequest):Promise<model.Action>;
 
 export function UpdateSettings(arg1:api.Settings):Promise<api.Settings>;
+
+export function Version():Promise<string>;

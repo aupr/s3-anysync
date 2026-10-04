@@ -24,6 +24,9 @@ import (
 //go:embed all:dist
 var assets embed.FS
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "s3-anysync:", err)
@@ -55,7 +58,7 @@ func run() error {
 		Launch: launch,
 		Emit:   rt.emit,
 	})
-	bound := gui.NewApp(conn, rt, dir)
+	bound := gui.NewApp(conn, rt, dir, version)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sum := sha256.Sum256([]byte(dir))
