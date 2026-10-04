@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -86,15 +87,76 @@ func TestCLIApproveDeletes(t *testing.T) {
 	if !strings.Contains(out, "deletes-pending") || !strings.Contains(out, "pending deletion: snippets/s00.json") || !strings.Contains(out, "approve-deletes") {
 		t.Fatalf("sync:\n%s", out)
 	}
-	if out := runOK(t, m, "approve-deletes", act); strings.Count(out, "pending deletion:") != 5 || !strings.Contains(out, "approve-deletes --yes") {
-		t.Fatalf("list without --yes must not approve:\n%s", out)
+	list := runOK(t, m, "approve-deletes", act)
+	if strings.Count(list, "pending deletion:") != 5 || !strings.Contains(list, "To approve exactly these 5 deletion(s): approve-deletes --yes --digest ") {
+		t.Fatalf("list without --yes must not approve:\n%s", list)
 	}
-	if out := runOK(t, m, "approve-deletes", "--yes", act); !strings.Contains(out, "deleted in cloud 5") {
+	digest := valueAfter(t, list, "review digest")
+	if len(digest) != 8 {
+		t.Fatalf("digest %q", digest)
+	}
+	if msg := runFail(t, m, "approve-deletes", "--yes", act); !strings.Contains(msg, "--yes needs --digest from the listing") {
+		t.Fatalf("--yes alone:\n%s", msg)
+	}
+	var o, e bytes.Buffer
+	if code := run([]string{"approve-deletes", "--yes", "--digest", "deadbeef", act}, &o, &e, m); code != 1 {
+		t.Fatalf("wrong digest exit %d", code)
+	}
+	if strings.Count(o.String(), "pending deletion:") != 5 || !strings.Contains(o.String(), "changed") || strings.Contains(o.String(), "approved 5 deletion") || !strings.Contains(o.String(), "review digest: "+digest) {
+		t.Fatalf("wrong digest:\n%s", o.String())
+	}
+	// The set changes between listing and approval: nothing is approved.
+	os.Remove(filepath.Join(dir, "s05.json"))
+	os.Remove(filepath.Join(dir, "s06.json"))
+	runOK(t, m, "sync", act)
+	o.Reset()
+	e.Reset()
+	if code := run([]string{"approve-deletes", "--yes", "--digest", digest, act}, &o, &e, m); code != 1 {
+		t.Fatalf("stale digest exit %d", code)
+	}
+	if strings.Count(o.String(), "pending deletion:") != 7 || strings.Contains(o.String(), "approved 7 deletion") {
+		t.Fatalf("stale digest:\n%s", o.String())
+	}
+	fresh := valueAfter(t, o.String(), "review digest")
+	if out := runOK(t, m, "approve-deletes", "--yes", "--digest", fresh, act); !strings.Contains(out, "approved 7 deletion(s)") || !strings.Contains(out, "deleted in cloud 7") {
 		t.Fatalf("approve:\n%s", out)
 	}
-	if out := runOK(t, m, "approve-deletes", "--yes", act); !strings.Contains(out, "no deletions are waiting") {
+	if out := runOK(t, m, "approve-deletes", act); !strings.Contains(out, "no deletions are waiting") {
 		t.Fatalf("nothing pending:\n%s", out)
 	}
+}
+
+func TestReviewDigest(t *testing.T) {
+	a := reviewDigest([]string{"b", "a", "c"})
+	if a != reviewDigest([]string{"c", "b", "a"}) || len(a) != 8 {
+		t.Errorf("digest not order-insensitive: %q", a)
+	}
+	if a == reviewDigest([]string{"a", "b"}) || a == reviewDigest([]string{"a", "b", "d"}) {
+		t.Error("digest equal for different sets")
+	}
+	in := []string{"b", "a"}
+	reviewDigest(in)
+	if in[0] != "b" {
+		t.Error("input was sorted in place")
+	}
+}
+
+func TestCLIRulesValidation(t *testing.T) {
+	m := opener(t, storage.NewMemory())
+	act, _, _ := cliSetup(t, m, 1)
+	for _, c := range []struct{ flag, val, msg string }{
+		{"--retention", "0", "--retention must be at least 1"},
+		{"--delete-guard-files", "0", "--delete-guard-files must be at least 1"},
+		{"--debounce", "0", "--debounce must be at least 1"},
+		{"--poll", "-1", "--poll must be at least 1"},
+		{"--delete-guard-percent", "0", "--delete-guard-percent must be between 1 and 100"},
+		{"--delete-guard-percent", "101", "--delete-guard-percent must be between 1 and 100"},
+	} {
+		if out := runFail(t, m, "action", "rules", c.flag, c.val, act); !strings.Contains(out, c.msg) {
+			t.Errorf("%s %s: %q", c.flag, c.val, out)
+		}
+	}
+	runOK(t, m, "action", "rules", "--delete-guard-percent", "100", "--retention", "1", act)
 }
 
 func TestCLIDiffAndItemsAndLeave(t *testing.T) {
@@ -220,6 +282,46 @@ func TestConnectToAgentNotAnswering(t *testing.T) {
 	defer cancel()
 	_, _, err = connectTo(ctx, dir, secrets.NewMemory(), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "does not answer") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestConnectToAgentTimesOut: the agent accepts connections but never answers.
+func TestConnectToAgentTimesOut(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	lock, err := datalock.Acquire(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if _, err := ipc.NewToken(dir); err != nil {
+		t.Fatal(err)
+	}
+	l, err := ipc.Listen(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() { <-done; c.Close() }()
+		}
+	}()
+	old := ipcConnectTimeout
+	ipcConnectTimeout = 300 * time.Millisecond
+	defer func() { ipcConnectTimeout = old }()
+	_, _, err = connectTo(context.Background(), dir, secrets.NewMemory(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "does not answer") || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("err = %v", err)
 	}
 }

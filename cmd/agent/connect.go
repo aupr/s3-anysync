@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/niceit/s3-anysync/internal/agent"
 	"github.com/niceit/s3-anysync/internal/api"
@@ -18,6 +19,9 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
+// ipcConnectTimeout bounds the first contact with a running agent.
+var ipcConnectTimeout = 10 * time.Second
+
 // connector opens the service for one CLI command; the returned func closes it.
 type connector func(ctx context.Context) (api.Service, func(), error)
 
@@ -27,8 +31,13 @@ type connector func(ctx context.Context) (api.Service, func(), error)
 func connectTo(ctx context.Context, dataDir string, sec secrets.Store, auto agent.Autostart, configure func(*app.App)) (api.Service, func(), error) {
 	lock, err := datalock.Acquire(dataDir)
 	if errors.Is(err, datalock.ErrBusy) {
-		c, err := ipc.Connect(ctx, dataDir)
+		cctx, cancel := context.WithTimeout(ctx, ipcConnectTimeout)
+		defer cancel()
+		c, err := ipc.Connect(cctx, dataDir)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(cctx.Err(), context.DeadlineExceeded) {
+				return nil, nil, fmt.Errorf("the agent owns the data folder but does not answer (timed out after %s; it may be starting or stopping): %w", ipcConnectTimeout, err)
+			}
 			return nil, nil, fmt.Errorf("the agent owns the data folder but does not answer (it may be starting or stopping): %w", err)
 		}
 		return c, c.Close, nil
@@ -47,7 +56,9 @@ func connectTo(ctx context.Context, dataDir string, sec secrets.Store, auto agen
 	}
 	m, err := agent.New(agent.Options{App: a, Autostart: auto, Version: version, Log: log})
 	if err == nil {
-		err = m.Start()
+		if err = m.Start(); err != nil {
+			m.Close()
+		}
 	}
 	if err != nil {
 		a.Close()

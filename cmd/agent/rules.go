@@ -18,6 +18,9 @@ func parseSchedule(spec string) (model.Schedule, error) {
 	var s model.Schedule
 	switch kind {
 	case "none":
+		if rest != "" {
+			return s, fmt.Errorf("--schedule none takes no value, got %q", spec)
+		}
 		s = model.Schedule{Kind: model.ScheduleNone}
 	case "every":
 		n, err := strconv.Atoi(rest)

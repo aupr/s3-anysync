@@ -20,7 +20,7 @@ func TestParseSchedule(t *testing.T) {
 			t.Errorf("parseSchedule(%q) = %+v, %v; want %+v", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "hourly", "every:0", "every:x", "daily:9:30", "weekly:8@10:00", "weekly:1", "cron:nope"} {
+	for _, in := range []string{"", "hourly", "every:0", "every:x", "daily:9:30", "weekly:8@10:00", "weekly:1", "cron:nope", "none:xyz"} {
 		if _, err := parseSchedule(in); err == nil {
 			t.Errorf("parseSchedule(%q) accepted", in)
 		}

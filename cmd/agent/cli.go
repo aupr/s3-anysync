@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -52,7 +55,8 @@ through it; otherwise they run in this process.
   sync ACTION_ID
   pause ACTION_ID
   resume ACTION_ID
-  approve-deletes [--yes] ACTION_ID      (lists the pending deletions; --yes approves exactly the listed ones)
+  approve-deletes [--yes --digest D] ACTION_ID
+              (lists the pending deletions and a review digest; --yes --digest D approves them only if they are still exactly the ones you reviewed)
   snapshot ACTION_ID
   snapshots ACTION_ID
   restore --to local|cloud|both [--path P]... ACTION_ID TS
@@ -506,6 +510,17 @@ func (c *cli) rules(ctx context.Context, args []string) error {
 	if set["exclude"] && *noEx {
 		return errors.New("action rules: use either --exclude or --no-excludes")
 	}
+	for _, v := range []struct {
+		name string
+		val  *int
+	}{{"retention", ret}, {"delete-guard-files", gFiles}, {"debounce", debounce}, {"poll", poll}} {
+		if set[v.name] && *v.val < 1 {
+			return fmt.Errorf("--%s must be at least 1", v.name)
+		}
+	}
+	if set["delete-guard-percent"] && (*gPct < 1 || *gPct > 100) {
+		return errors.New("--delete-guard-percent must be between 1 and 100")
+	}
 	r := st.Action.Rules()
 	if set["name"] {
 		r.Name = *name
@@ -659,7 +674,7 @@ func (c *cli) printResult(res model.SyncResult) {
 		fmt.Fprintf(c.out, "  pending deletion: %s\n", p)
 	}
 	if res.Outcome == model.OutcomeDeletesPending {
-		fmt.Fprintln(c.out, "These deletions are held back by the delete guard. Check them (approve-deletes ACTION_ID), then approve with --yes (or restore the files).")
+		fmt.Fprintln(c.out, "These deletions are held back by the delete guard. Check them (approve-deletes ACTION_ID), then approve with the printed --yes --digest command (or restore the files).")
 	}
 	for _, p := range res.Unsupported {
 		fmt.Fprintf(c.out, "  not synced here (name not allowed on this system): %s\n", p)
@@ -711,12 +726,25 @@ func (c *cli) resume(ctx context.Context, args []string) error {
 	return nil
 }
 
+// reviewDigest identifies a set of pending deletions: the first 8 hex chars
+// of the SHA-256 of the sorted paths joined by newlines.
+func reviewDigest(paths []string) string {
+	sorted := append([]string(nil), paths...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
 func (c *cli) approveDeletes(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("approve-deletes", flag.ContinueOnError)
-	yes := fs.Bool("yes", false, "approve exactly the deletions listed now")
+	yes := fs.Bool("yes", false, "approve the deletions identified by --digest")
+	digest := fs.String("digest", "", "review digest printed by the listing")
 	pos, err := actionArg(fs, args)
 	if err != nil {
 		return err
+	}
+	if *yes && *digest == "" {
+		return errors.New("approve-deletes: --yes needs --digest from the listing (so you approve exactly what you reviewed)")
 	}
 	p, err := c.svc.PendingDeletes(ctx, pos[0])
 	if err != nil {
@@ -726,17 +754,28 @@ func (c *cli) approveDeletes(ctx context.Context, args []string) error {
 		fmt.Fprintln(c.out, "no deletions are waiting for approval")
 		return nil
 	}
-	for _, x := range p.Paths {
-		fmt.Fprintf(c.out, "  pending deletion: %s\n", x)
+	cur := reviewDigest(p.Paths)
+	list := func() {
+		for _, x := range p.Paths {
+			fmt.Fprintf(c.out, "  pending deletion: %s\n", x)
+		}
+		fmt.Fprintf(c.out, "review digest: %s\n", cur)
 	}
 	if !*yes {
-		fmt.Fprintf(c.out, "To approve exactly these %d deletion(s): approve-deletes --yes %s\n", len(p.Paths), pos[0])
+		list()
+		fmt.Fprintf(c.out, "To approve exactly these %d deletion(s): approve-deletes --yes --digest %s %s\n", len(p.Paths), cur, pos[0])
 		return nil
+	}
+	if cur != *digest {
+		list()
+		fmt.Fprintln(c.out, "The pending deletions changed since you reviewed them; nothing was approved. Review the list above and use the new digest.")
+		return errors.New("approve-deletes: the pending deletions changed (digest mismatch)")
 	}
 	res, err := c.svc.ApproveDeletes(ctx, pos[0], p.Paths)
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(c.out, "approved %d deletion(s)\n", len(p.Paths))
 	c.printResult(res)
 	return nil
 }
