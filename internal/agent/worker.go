@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -32,6 +33,7 @@ func isPermanent(err error) bool {
 }
 
 type job struct {
+	ctx  context.Context // the caller's: a job whose caller gave up is not run
 	fn   func(ctx context.Context) (any, error)
 	done chan jobResult
 }
@@ -111,15 +113,46 @@ func (w *worker) loop() {
 		case <-w.ctx.Done():
 			return
 		case j := <-w.jobs:
-			v, err := j.fn(w.ctx)
-			j.done <- jobResult{v, err}
+			w.runJob(j)
 		case reason := <-w.wake:
-			w.autoSync(reason)
+			w.guard(func() { w.autoSync(reason) })
 		case <-retryC:
 			w.retry = nil
-			w.autoSync("retry")
+			w.guard(func() { w.autoSync("retry") })
 		}
 	}
+}
+
+// runJob executes a queued job unless the worker is stopping or the caller
+// has already given up.
+func (w *worker) runJob(j *job) {
+	if err := w.ctx.Err(); err != nil {
+		j.done <- jobResult{nil, errShuttingDown}
+		return
+	}
+	if err := j.ctx.Err(); err != nil {
+		j.done <- jobResult{nil, err}
+		return
+	}
+	var v any
+	var err error
+	w.guard(func() { v, err = j.fn(w.ctx) }, &err)
+	j.done <- jobResult{v, err}
+}
+
+// guard runs f and turns a panic into an error (stored in errp if given) so a
+// bug in one run cannot kill the worker or the agent.
+func (w *worker) guard(f func(), errp ...*error) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.m.log.Error("panic in worker", "action", w.id, "panic", r, "stack", string(debug.Stack()))
+			w.setRunning(false)
+			if len(errp) > 0 {
+				*errp[0] = fmt.Errorf("agent: internal error: %v", r)
+			}
+		}
+	}()
+	f()
 }
 
 // trigger asks for a sync; repeated requests while one is queued coalesce.
@@ -132,7 +165,7 @@ func (w *worker) trigger(reason string) {
 
 // do runs fn on the worker goroutine and waits for its result.
 func (w *worker) do(ctx context.Context, fn func(ctx context.Context) (any, error)) (any, error) {
-	j := &job{fn: fn, done: make(chan jobResult, 1)}
+	j := &job{ctx: ctx, fn: fn, done: make(chan jobResult, 1)}
 	select {
 	case w.jobs <- j:
 	case <-w.ctx.Done():
@@ -144,7 +177,19 @@ func (w *worker) do(ctx context.Context, fn func(ctx context.Context) (any, erro
 	case r := <-j.done:
 		return r.v, r.err
 	case <-w.ctx.Done():
-		return nil, errShuttingDown
+		// The job may be the one that stopped the worker (leave): its result
+		// is delivered just before the loop exits.
+		select {
+		case r := <-j.done:
+			return r.v, r.err
+		case <-w.done:
+			select {
+			case r := <-j.done:
+				return r.v, r.err
+			default:
+				return nil, errShuttingDown
+			}
+		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -189,6 +234,10 @@ func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResu
 	w.setRunning(true)
 	res, err := f(w.ctx, r)
 	w.setRunning(false)
+	if errors.Is(err, engine.ErrInvalidInput) {
+		// The caller's request was wrong; the action did not fail.
+		return res, err
+	}
 	if w.ctx.Err() != nil {
 		return res, err // shutting down: don't record an interruption as a failure
 	}
@@ -210,6 +259,8 @@ func (w *worker) afterRun(res model.SyncResult, err error) {
 	now := time.Now().UTC()
 	var message string
 	retryIn := time.Duration(0)
+	paused, perr := w.m.app.Paused(w.id)
+	paused = perr == nil && paused
 	w.mu.Lock()
 	st := &w.st
 	st.lastRun = now
@@ -223,8 +274,10 @@ func (w *worker) afterRun(res model.SyncResult, err error) {
 			st.nextRun = time.Time{}
 			message = fmt.Sprintf("%s needs attention: %v", name, err)
 		} else {
-			retryIn = w.m.backoff(st.failures)
-			st.nextRun = now.Add(retryIn)
+			if !paused {
+				retryIn = w.m.backoff(st.failures)
+				st.nextRun = now.Add(retryIn)
+			}
 			if st.failures == NotifyAfterFailures {
 				message = fmt.Sprintf("%s failed %d times: %v", name, st.failures, err)
 			}
@@ -250,7 +303,7 @@ func (w *worker) afterRun(res model.SyncResult, err error) {
 		st.state = api.StateIdle
 		st.nextRun = w.nextScheduled()
 	}
-	if paused, perr := w.m.app.Paused(w.id); perr == nil && paused {
+	if paused {
 		st.state = api.StatePausedUser
 	}
 	w.mu.Unlock()

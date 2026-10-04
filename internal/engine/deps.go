@@ -22,6 +22,9 @@ var (
 	ErrKeyCheckMissing = errors.New("keycheck missing but the action already has files: cannot verify the passphrase; repair by restoring .meta/keycheck")
 	// ErrConflictPending: the action is paused until its conflicts are resolved.
 	ErrConflictPending = errors.New("the action has unresolved conflicts")
+	// ErrInvalidInput: the caller's request is wrong (not a sync failure):
+	// an unknown side, nothing to resolve or approve, a missing choice.
+	ErrInvalidInput = errors.New("invalid input")
 	// ErrRootMissing: an item's local folder (or a file item's parent folder)
 	// is missing although content under it was synced before; it is refused
 	// rather than treated as a mass deletion.

@@ -290,18 +290,18 @@ func scenarioResolveStrict(t *testing.T, f storeFactory) {
 		}
 	}
 	_, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal})
-	if err == nil || !strings.Contains(err.Error(), "snippets/go.json") {
+	if err == nil || !strings.Contains(err.Error(), "snippets/go.json") || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("partial choice: want error naming snippets/go.json, got %v", err)
 	}
 	fresh("partial")
 	_, err = b.runner.Resolve(ctx, map[string]model.Side{
 		"settings.json": model.SideLocal, "snippets/go.json": model.SideLocal, "nope.json": model.SideCloud})
-	if err == nil || !strings.Contains(err.Error(), "nope.json") {
+	if err == nil || !strings.Contains(err.Error(), "nope.json") || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("unknown path: want error naming nope.json, got %v", err)
 	}
 	fresh("unknown")
-	if _, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": "both", "snippets/go.json": model.SideLocal}); err == nil {
-		t.Fatal("unknown side accepted")
+	if _, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": "both", "snippets/go.json": model.SideLocal}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("unknown side: want ErrInvalidInput, got %v", err)
 	}
 	fresh("bad side")
 
@@ -311,7 +311,7 @@ func scenarioResolveStrict(t *testing.T, f storeFactory) {
 		t.Fatalf("resolve: %+v, %v", res, err)
 	}
 	_, err = b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal})
-	if err == nil || !strings.Contains(err.Error(), "no unresolved conflicts") {
+	if err == nil || !strings.Contains(err.Error(), "no unresolved conflicts") || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("want 'no unresolved conflicts', got %v", err)
 	}
 }

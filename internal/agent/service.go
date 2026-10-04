@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/niceit/s3-anysync/internal/api"
 	"github.com/niceit/s3-anysync/internal/engine"
@@ -33,22 +36,17 @@ func (m *Manager) Settings(ctx context.Context) (api.Settings, error) {
 
 // UpdateSettings applies the whole Settings value: read it first, change
 // what you need, send it back. MachineID and AutostartSupported are ignored.
+// The whole request is validated before anything is changed.
 func (m *Manager) UpdateSettings(ctx context.Context, s api.Settings) (api.Settings, error) {
-	if s.MachineName != "" && s.MachineName != m.app.CurrentMachineName() {
-		if err := m.app.SetMachineName(s.MachineName); err != nil {
-			return api.Settings{}, fmt.Errorf("%w: %v", api.ErrInvalid, err)
-		}
+	name := strings.TrimSpace(s.MachineName)
+	if s.MachineName != "" && name == "" {
+		return api.Settings{}, fmt.Errorf("%w: machine name is empty", api.ErrInvalid)
 	}
+	var lvl slog.Level
 	if s.LogLevel != "" {
-		lvl, err := logging.ParseLevel(s.LogLevel)
-		if err != nil {
+		var err error
+		if lvl, err = logging.ParseLevel(s.LogLevel); err != nil {
 			return api.Settings{}, fmt.Errorf("%w: %v", api.ErrInvalid, err)
-		}
-		if err := m.app.SetLogLevel(s.LogLevel); err != nil {
-			return api.Settings{}, err
-		}
-		if m.opts.LogLevel != nil {
-			m.opts.LogLevel.Set(lvl)
 		}
 	}
 	cur, err := m.Settings(ctx)
@@ -68,7 +66,37 @@ func (m *Manager) UpdateSettings(ctx context.Context, s api.Settings) (api.Setti
 			return cur, err
 		}
 	}
+	if name != "" && name != m.app.CurrentMachineName() {
+		if err := m.app.SetMachineName(name); err != nil {
+			return api.Settings{}, fmt.Errorf("%w: %v", api.ErrInvalid, err)
+		}
+		m.resetRunners(ctx)
+	}
+	if s.LogLevel != "" {
+		if err := m.app.SetLogLevel(s.LogLevel); err != nil {
+			return api.Settings{}, err
+		}
+		if m.opts.LogLevel != nil {
+			m.opts.LogLevel.Set(lvl)
+		}
+	}
 	return m.Settings(ctx)
+}
+
+// resetRunners drops every worker's cached runner (through its job queue) so
+// the next run picks up the new machine name.
+func (m *Manager) resetRunners(ctx context.Context) {
+	m.mu.Lock()
+	ws := make([]*worker, 0, len(m.workers))
+	for _, w := range m.workers {
+		ws = append(ws, w)
+	}
+	m.mu.Unlock()
+	for _, w := range ws {
+		if _, err := w.do(ctx, func(context.Context) (any, error) { w.runner = nil; return nil, nil }); err != nil {
+			m.log.Warn("could not reset runner", "action", w.id, "err", err)
+		}
+	}
 }
 
 func (m *Manager) Profiles(ctx context.Context) ([]model.Profile, error) { return m.app.Profiles() }
@@ -192,7 +220,16 @@ func (m *Manager) LeaveAction(ctx context.Context, id string, force bool) error 
 	if err != nil {
 		return err
 	}
-	if _, err := w.do(ctx, func(c context.Context) (any, error) { return nil, m.app.LeaveAction(c, id, force) }); err != nil {
+	_, err = w.do(ctx, func(c context.Context) (any, error) {
+		if err := m.app.LeaveAction(c, id, force); err != nil {
+			return nil, err
+		}
+		// The action is gone: nothing queued behind this job may run on it.
+		w.cancel()
+		w.runner = nil
+		return nil, nil
+	})
+	if err != nil {
 		return err
 	}
 	m.removeWorker(id)
@@ -243,16 +280,24 @@ func (m *Manager) runnerJob(ctx context.Context, id string, f func(context.Conte
 }
 
 func (m *Manager) Snapshot(ctx context.Context, id string) (model.SnapshotInfo, error) {
-	v, err := m.runnerJob(ctx, id, func(c context.Context, r *engine.Runner) (any, error) { return r.Snapshot(c) })
-	if errors.Is(err, engine.ErrConflictPending) {
-		if w, werr := m.worker(id); werr == nil {
-			n := 0
-			if cs, cerr := m.app.Conflicts(id); cerr == nil {
-				n = len(cs)
-			}
-			w.setState(func(s *wstate) { s.state, s.conflicts = api.StatePausedConflict, n })
-		}
+	w, err := m.worker(id)
+	if err != nil {
+		return model.SnapshotInfo{}, err
 	}
+	v, err := m.runnerJob(ctx, id, func(c context.Context, r *engine.Runner) (any, error) {
+		info, err := r.Snapshot(c)
+		if errors.Is(err, engine.ErrConflictPending) {
+			// Runs on the worker; a user pause stays in force.
+			if paused, perr := m.app.Paused(id); perr != nil || !paused {
+				n := 0
+				if cs, cerr := m.app.Conflicts(id); cerr == nil {
+					n = len(cs)
+				}
+				w.setState(func(s *wstate) { s.state, s.conflicts = api.StatePausedConflict, n })
+			}
+		}
+		return info, err
+	})
 	info, _ := v.(model.SnapshotInfo)
 	return info, err
 }
@@ -300,7 +345,15 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 			return nil, err
 		}
 		fresh := w.initialState()
-		w.setState(func(s *wstate) { s.state, s.conflicts, s.pending = fresh.state, fresh.conflicts, fresh.pending })
+		// An explicit retry: forget past failures and the pending backoff.
+		if w.retry != nil {
+			w.retry.Stop()
+			w.retry = nil
+		}
+		w.setState(func(s *wstate) {
+			s.state, s.conflicts, s.pending = fresh.state, fresh.conflicts, fresh.pending
+			s.failures, s.permanent, s.lastError, s.nextRun = 0, false, "", time.Time{}
+		})
 		w.trigger("resume")
 		return nil, nil
 	})

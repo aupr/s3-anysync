@@ -28,6 +28,7 @@ func TestCodesRoundTrip(t *testing.T) {
 		storage.ErrNotFound:         "not-found",
 		ErrNotFound:                 "not-found",
 		ErrInvalid:                  "invalid",
+		engine.ErrInvalidInput:      "invalid",
 		ErrUnsupported:              "unsupported",
 	}
 	for sentinel, code := range cases {

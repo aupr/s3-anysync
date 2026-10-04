@@ -70,7 +70,7 @@ func scenarioMassDelete(t *testing.T, f storeFactory) {
 	if p, _ := a.db.LoadPendingDeletes(act.ID); p != nil {
 		t.Fatalf("pending deletions not cleared: %+v", p)
 	}
-	if _, err := a.runner.ApproveDeletes(ctx, nil); err == nil {
+	if _, err := a.runner.ApproveDeletes(ctx, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Fatal("approve with nothing pending accepted")
 	}
 

@@ -37,7 +37,7 @@ type resolveReq struct {
 func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (model.SyncResult, error) {
 	for p, side := range choices {
 		if side != model.SideLocal && side != model.SideCloud {
-			return model.SyncResult{}, fmt.Errorf("%s: unknown side %q", p, side)
+			return model.SyncResult{}, fmt.Errorf("%w: %s: unknown side %q", ErrInvalidInput, p, side)
 		}
 	}
 	saved, err := r.d.Repo.LoadConflicts(r.action.ID)
@@ -45,7 +45,7 @@ func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (mo
 		return model.SyncResult{}, fmt.Errorf("load conflicts: %w", err)
 	}
 	if len(saved) == 0 {
-		return model.SyncResult{}, errors.New("no unresolved conflicts")
+		return model.SyncResult{}, fmt.Errorf("%w: no unresolved conflicts", ErrInvalidInput)
 	}
 	isSaved := make(map[string]bool, len(saved))
 	for _, c := range saved {
@@ -65,10 +65,10 @@ func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (mo
 	sort.Strings(unknown)
 	sort.Strings(missing)
 	if len(unknown) > 0 {
-		return model.SyncResult{}, fmt.Errorf("not a conflict of this action: %s", strings.Join(unknown, ", "))
+		return model.SyncResult{}, fmt.Errorf("%w: not a conflict of this action: %s", ErrInvalidInput, strings.Join(unknown, ", "))
 	}
 	if len(missing) > 0 {
-		return model.SyncResult{}, fmt.Errorf("choose a side for every conflict; missing: %s", strings.Join(missing, ", "))
+		return model.SyncResult{}, fmt.Errorf("%w: choose a side for every conflict; missing: %s", ErrInvalidInput, strings.Join(missing, ", "))
 	}
 	reviewed := make(map[string]model.Conflict, len(saved))
 	for _, c := range saved {

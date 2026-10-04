@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 
@@ -80,7 +79,7 @@ func (r *Runner) ApproveDeletes(ctx context.Context, reviewed []string) (model.S
 		return model.SyncResult{}, fmt.Errorf("load pending deletions: %w", err)
 	}
 	if p == nil {
-		return model.SyncResult{}, errors.New("no deletions are waiting for approval")
+		return model.SyncResult{}, fmt.Errorf("%w: no deletions are waiting for approval", ErrInvalidInput)
 	}
 	if !sameSet(reviewed, p.Paths) {
 		saved := append([]string(nil), p.Paths...)
