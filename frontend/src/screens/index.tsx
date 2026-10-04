@@ -1,10 +1,11 @@
-import { EmptyState } from '../components/ui'
 import type { Route } from '../lib/router'
 import { ActionDetail } from './ActionDetail'
 import { Actions } from './Actions'
+import { Activity } from './Activity'
 import { Conflicts } from './Conflicts'
 import { DeleteReview } from './DeleteReview'
 import { Profiles } from './Profiles'
+import { SettingsScreen } from './Settings'
 
 export function Screen({ route }: { route: Route }) {
   switch (route.name) {
@@ -18,7 +19,11 @@ export function Screen({ route }: { route: Route }) {
       return <DeleteReview key={route.id} id={route.id} />
     case 'profiles':
       return <Profiles />
+    case 'activity':
+      return <Activity />
+    case 'settings':
+      return <SettingsScreen />
     default:
-      return <EmptyState title="This screen is added in a later task." />
+      return <Actions />
   }
 }
