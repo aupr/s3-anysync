@@ -120,5 +120,7 @@ esac
 
 log "checksums"
 (cd "$DIST" && files=(s3-anysync-*) && [[ ${#files[@]} -gt 0 ]] && shasum -a 256 "${files[@]}" > SHA256SUMS) || die "no artifacts to checksum"
-if [[ -x scripts/verify-dist.sh ]]; then scripts/verify-dist.sh "$DIST" "$VERSION"; fi
+# Runs before the EXIT trap removes the stage dir so the Windows executables are checked too.
+log "verify"
+scripts/verify-dist.sh "$DIST" "$VERSION" || die "artifact verification failed (see FAIL lines above)"
 log "done: $DIST"
