@@ -1,6 +1,8 @@
 // Package schedule turns an action's schedule settings into cron schedules.
 // Times are interpreted in the location of the time passed to Next (local
 // time in the agent).
+// A CRON_TZ= prefix in a cron spec is honoured by the library, so such a
+// schedule can run in another zone.
 package schedule
 
 import (
@@ -14,6 +16,12 @@ import (
 	"github.com/niceit/s3-anysync/internal/model"
 )
 
+// MaxEveryMinutes is the maximum allowed interval in minutes (one week).
+const MaxEveryMinutes = 7 * 24 * 60
+
+// MinInterval is the minimum allowed interval between consecutive runs.
+var MinInterval = time.Minute
+
 // Compile returns the schedule for s, or nil for no schedule.
 func Compile(s model.Schedule) (cron.Schedule, error) {
 	switch s.Kind {
@@ -22,6 +30,9 @@ func Compile(s model.Schedule) (cron.Schedule, error) {
 	case model.ScheduleInterval:
 		if s.EveryMinutes < 1 {
 			return nil, errors.New("schedule: every-minutes must be at least 1")
+		}
+		if s.EveryMinutes > MaxEveryMinutes {
+			return nil, fmt.Errorf("schedule: every-minutes must be at most %d", MaxEveryMinutes)
 		}
 		return cron.Every(time.Duration(s.EveryMinutes) * time.Minute), nil
 	case model.ScheduleDaily:
@@ -61,14 +72,27 @@ func parseAt(at string) (int, int, error) {
 	return t.Hour(), t.Minute(), nil
 }
 
-// Validate reports whether s can be compiled.
+// Validate reports whether s can be compiled and has an acceptable interval.
 func Validate(s model.Schedule) error {
-	_, err := Compile(s)
-	return err
+	sched, err := Compile(s)
+	if err != nil || sched == nil {
+		return err
+	}
+	// Check if consecutive runs are closer than MinInterval
+	ref := time.Date(2026, 1, 5, 3, 7, 0, 0, time.Local)
+	first := sched.Next(ref)
+	second := sched.Next(first)
+	if second.Sub(first) < MinInterval {
+		return fmt.Errorf("schedule: runs would be less than %s apart", MinInterval)
+	}
+	return nil
 }
 
 // NextRuns returns the next n run times after from (none for no schedule).
 func NextRuns(s model.Schedule, from time.Time, n int) ([]time.Time, error) {
+	if n <= 0 {
+		return []time.Time{}, nil
+	}
 	sched, err := Compile(s)
 	if err != nil || sched == nil {
 		return nil, err
