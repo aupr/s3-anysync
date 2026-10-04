@@ -44,10 +44,37 @@ func covers(p *model.PendingDeletes, del []string) bool {
 	return true
 }
 
+// sameSet reports whether a and b hold the same paths, ignoring order and
+// duplicates.
+func sameSet(a, b []string) bool {
+	set := func(l []string) map[string]bool {
+		m := make(map[string]bool, len(l))
+		for _, x := range l {
+			m[x] = true
+		}
+		return m
+	}
+	sa, sb := set(a), set(b)
+	if len(sa) != len(sb) {
+		return false
+	}
+	for x := range sa {
+		if !sb[x] {
+			return false
+		}
+	}
+	return true
+}
+
 // ApproveDeletes approves the deletions held back by the delete guard and
-// runs a sync. The approval covers exactly the saved paths and lasts until a
-// run applies them; a run that would delete more trips the guard again.
-func (r *Runner) ApproveDeletes(ctx context.Context) (model.SyncResult, error) {
+// runs a sync. reviewed is the list the user looked at: it must equal the
+// saved pending paths as a set (order and duplicates don't matter). If it
+// differs (the pending set changed since the user looked) nothing is approved
+// and nothing changes: the result is OutcomeDeletesPending with the saved
+// paths so the caller can show the fresh list. The approval covers exactly
+// the saved paths and lasts until a run applies them; a run that would delete
+// more trips the guard again.
+func (r *Runner) ApproveDeletes(ctx context.Context, reviewed []string) (model.SyncResult, error) {
 	p, err := r.d.Repo.LoadPendingDeletes(r.action.ID)
 	if err != nil {
 		return model.SyncResult{}, fmt.Errorf("load pending deletions: %w", err)
@@ -55,9 +82,24 @@ func (r *Runner) ApproveDeletes(ctx context.Context) (model.SyncResult, error) {
 	if p == nil {
 		return model.SyncResult{}, errors.New("no deletions are waiting for approval")
 	}
+	if !sameSet(reviewed, p.Paths) {
+		saved := append([]string(nil), p.Paths...)
+		sort.Strings(saved)
+		return model.SyncResult{Outcome: model.OutcomeDeletesPending, PendingDeletes: saved}, nil
+	}
 	p.Approved = true
 	if err := r.d.Repo.SavePendingDeletes(r.action.ID, p); err != nil {
-		return model.SyncResult{}, err
+		return model.SyncResult{}, fmt.Errorf("save deletion approval: %w", err)
 	}
-	return r.run(ctx, model.HistoryApproveDeletes, nil)
+	res, err := r.run(ctx, model.HistoryApproveDeletes, nil)
+	if err == nil && res.Outcome == model.OutcomeConflict {
+		// The conflict stop cleared the saved record, but the user approved
+		// this exact list just now and the conflict is not new: keep the
+		// approval so that resolving the conflict can apply the deletions
+		// (otherwise resolve and approve would chase each other forever).
+		if serr := r.d.Repo.SavePendingDeletes(r.action.ID, p); serr != nil {
+			return res, fmt.Errorf("keep deletion approval: %w", serr)
+		}
+	}
+	return res, err
 }

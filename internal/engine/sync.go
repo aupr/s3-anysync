@@ -150,6 +150,15 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 	}
 	ops, conflicts := applyOverrides(ops, overrides, now)
 	if len(conflicts) > 0 {
+		// The situation changed: a saved approval (or list) must not
+		// authorize deletions later.
+		if pending, err := r.d.Repo.LoadPendingDeletes(id); err != nil {
+			return model.SyncResult{}, false, fmt.Errorf("load pending deletions: %w", err)
+		} else if pending != nil {
+			if err := r.d.Repo.SavePendingDeletes(id, nil); err != nil {
+				return model.SyncResult{}, false, fmt.Errorf("clear pending deletions: %w", err)
+			}
+		}
 		if err := r.d.Repo.SaveConflicts(id, conflicts); err != nil {
 			return model.SyncResult{}, false, fmt.Errorf("save conflicts: %w", err)
 		}
@@ -169,7 +178,7 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 	if del := massDeletes(ops, resolved, len(baseline), r.action); del == nil {
 		if pending != nil {
 			if err := r.d.Repo.SavePendingDeletes(id, nil); err != nil {
-				return model.SyncResult{}, false, err
+				return model.SyncResult{}, false, fmt.Errorf("clear pending deletions: %w", err)
 			}
 			pending = nil
 		}
