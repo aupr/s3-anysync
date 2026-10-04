@@ -108,8 +108,9 @@ func (r *rec) Sync(_ context.Context, id string) (model.SyncResult, error) {
 func (r *rec) Snapshot(_ context.Context, id string) (model.SnapshotInfo, error) {
 	return model.SnapshotInfo{}, r.log("Snapshot", id)
 }
-func (r *rec) Pause(_ context.Context, id string) error  { return r.log("Pause", id) }
-func (r *rec) Resume(_ context.Context, id string) error { return r.log("Resume", id) }
+func (r *rec) Pause(_ context.Context, id string) error      { return r.log("Pause", id) }
+func (r *rec) CancelSync(_ context.Context, id string) error { return r.log("CancelSync", id) }
+func (r *rec) Resume(_ context.Context, id string) error     { return r.log("Resume", id) }
 func (r *rec) PendingDeletes(_ context.Context, id string) (*model.PendingDeletes, error) {
 	return nil, r.log("PendingDeletes", id)
 }
@@ -224,6 +225,7 @@ func TestEveryClientMethodReachesTheRightRoute(t *testing.T) {
 		{"Snapshot", func() error { _, e := c.Snapshot(ctx, "a/b"); return e }, `Snapshot "a/b"`},
 		{"Pause", func() error { return c.Pause(ctx, "a/b") }, `Pause "a/b"`},
 		{"Resume", func() error { return c.Resume(ctx, weird) }, `Resume "a b?c"`},
+		{"CancelSync", func() error { return c.CancelSync(ctx, weird) }, `CancelSync "a b?c"`},
 		{"PendingDeletes", func() error { _, e := c.PendingDeletes(ctx, "a/b"); return e }, `PendingDeletes "a/b"`},
 		{"ApproveDeletes", func() error { _, e := c.ApproveDeletes(ctx, "a/b", []string{"x/1", "y z"}); return e },
 			`ApproveDeletes "a/b"|["x/1","y z"]`},

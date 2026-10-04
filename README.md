@@ -77,7 +77,7 @@ s3-anysync-agent autostart enable|disable|status
 
 Enabling never starts or stops the running agent. When the agent starts with autostart enabled, it rewrites the entry only if the stored executable no longer exists, and never when `S3_ANYSYNC_DATA_DIR` is set (dev runs).
 
-Every other command talks to the running agent automatically (the same API the GUI will use), or works in-process when no agent runs. Useful commands: `status` (agent state, each action's state and last result), `pause ACTION_ID` and `resume ACTION_ID` (a pause survives restarts), `history [--limit N] ACTION_ID`.
+Every other command talks to the running agent automatically (the same API the GUI will use), or works in-process when no agent runs. Useful commands: `status` (agent state, each action's state and last result), `pause ACTION_ID` and `resume ACTION_ID` (a pause survives restarts), `cancel ACTION_ID` (stops the running sync, snapshot or restore; a cancelled run is not a failure: nothing is half-applied, no backoff, no notification), `history [--limit N] ACTION_ID`.
 
 ## Triggers
 

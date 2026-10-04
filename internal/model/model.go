@@ -297,6 +297,7 @@ const (
 	OutcomeConflict       = "conflict"
 	OutcomeError          = "error"
 	OutcomeDeletesPending = "deletes-pending"
+	OutcomeCancelled      = "cancelled"
 )
 
 // History kinds.

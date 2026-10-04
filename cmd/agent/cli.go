@@ -59,6 +59,7 @@ through it; otherwise they run in this process.
   sync ACTION_ID
   pause ACTION_ID
   resume ACTION_ID
+  cancel ACTION_ID                     stop the action's running sync, snapshot or restore
   approve-deletes [--yes --digest D] ACTION_ID
               (lists the pending deletions and a review digest; --yes --digest D approves them only if they are still exactly the ones you reviewed)
   snapshot ACTION_ID
@@ -88,7 +89,7 @@ func run(args []string, stdout, stderr io.Writer, connect connector) int {
 	commands := map[string]command{
 		"status": (*cli).status, "machine": (*cli).machine, "settings": (*cli).settings, "autostart": (*cli).autostart,
 		"profile": (*cli).profile, "action": (*cli).action, "item": (*cli).item,
-		"sync": (*cli).sync, "pause": (*cli).pause, "resume": (*cli).resume, "approve-deletes": (*cli).approveDeletes,
+		"sync": (*cli).sync, "pause": (*cli).pause, "resume": (*cli).resume, "cancel": (*cli).cancel, "approve-deletes": (*cli).approveDeletes,
 		"snapshot": (*cli).snapshot, "snapshots": (*cli).snapshots, "restore": (*cli).restore,
 		"conflicts": (*cli).conflicts, "diff": (*cli).diff, "resolve": (*cli).resolve, "history": (*cli).history,
 	}
@@ -135,6 +136,8 @@ func explain(err error) string {
 		return "  hint: an item's folder is missing (unmounted drive or renamed folder?); restore or re-mount it. If it was removed on purpose, unmap the item and map it again."
 	case errors.Is(err, engine.ErrProtectedPath):
 		return "  hint: this folder contains s3-anysync's own data folder; choose a narrower folder."
+	case errors.Is(err, api.ErrCancelled):
+		return "  hint: the run was cancelled; nothing is half-applied, the next sync continues."
 	case errors.Is(err, app.ErrInUse):
 		return "  hint: the profile is used by actions; leave them first, or keep the bucket and folder."
 	case errors.Is(err, storage.ErrLocked):
@@ -803,6 +806,18 @@ func (c *cli) resume(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Fprintln(c.out, "resumed")
+	return nil
+}
+
+func (c *cli) cancel(ctx context.Context, args []string) error {
+	pos, err := actionArg(flag.NewFlagSet("cancel", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	if err := c.svc.CancelSync(ctx, pos[0]); err != nil {
+		return err
+	}
+	fmt.Fprintln(c.out, "cancel requested")
 	return nil
 }
 

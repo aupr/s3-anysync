@@ -35,6 +35,7 @@ func TestCodesRoundTrip(t *testing.T) {
 		engine.ErrProtectedPath:     "invalid",
 		ErrUnsupported:              "unsupported",
 		ErrUnavailable:              "unavailable",
+		ErrCancelled:                "cancelled",
 	}
 	for sentinel, code := range cases {
 		wrapped := fmt.Errorf("context: %w", sentinel)

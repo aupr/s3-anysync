@@ -262,7 +262,7 @@ func (m *Manager) syncJob(ctx context.Context, id string, f func(context.Context
 	if err != nil {
 		return model.SyncResult{}, err
 	}
-	v, err := w.do(ctx, func(context.Context) (any, error) { return w.runSync(f) })
+	v, err := w.do(ctx, func(c context.Context) (any, error) { return w.runSync(c, f) })
 	res, _ := v.(model.SyncResult)
 	return res, err
 }
@@ -294,7 +294,11 @@ func (m *Manager) runnerJob(ctx context.Context, id string, f func(context.Conte
 		}
 		w.setRunning(true)
 		defer w.setRunning(false)
-		return f(c, r)
+		v, err := f(c, r)
+		if err != nil && c.Err() != nil && w.ctx.Err() == nil {
+			return v, api.ErrCancelled // only CancelSync ends a job context while the worker lives
+		}
+		return v, err
 	})
 }
 
@@ -406,4 +410,17 @@ func (m *Manager) History(ctx context.Context, id string, limit int) ([]model.Hi
 
 func (m *Manager) Subscribe(ctx context.Context) (<-chan api.Event, error) {
 	return m.bus.subscribe(ctx, m.ctx.Done()), nil
+}
+
+// CancelSync cancels the action's running job, if any; it is a no-op when
+// nothing runs, so it never affects a later job.
+func (m *Manager) CancelSync(ctx context.Context, id string) error {
+	w, err := m.worker(id)
+	if err != nil {
+		return err
+	}
+	if w.cancelRunning() {
+		m.log.Info("job cancelled by the user", "action", id)
+	}
+	return nil
 }

@@ -45,6 +45,9 @@ type Service interface {
 	Snapshot(ctx context.Context, actionID string) (model.SnapshotInfo, error)
 	Pause(ctx context.Context, actionID string) error
 	Resume(ctx context.Context, actionID string) error
+	// CancelSync cancels the action's running job, if any; the cancelled
+	// caller gets code cancelled. A pending automatic trigger is dropped.
+	CancelSync(ctx context.Context, actionID string) error
 	PendingDeletes(ctx context.Context, actionID string) (*model.PendingDeletes, error)
 	// ApproveDeletes approves the pending deletions, but only if the saved list
 	// still equals reviewed (the paths the user was shown); otherwise nothing

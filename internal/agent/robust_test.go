@@ -430,8 +430,8 @@ func TestCancelledWorkerRunsNoSync(t *testing.T) {
 	ch, _ := e.m.Subscribe(sctx)
 	w.cancel()
 	<-w.done
-	w.autoSync("wake")
-	w.autoSync("retry")
+	w.autoSync(ctx, "wake")
+	w.autoSync(ctx, "retry")
 	select {
 	case ev := <-ch:
 		t.Fatalf("event after cancel: %+v", ev)
@@ -565,5 +565,85 @@ func TestItemContainingDataFolderIsRefusedPermanently(t *testing.T) {
 	}
 	if after := len(store.Keys()); after > before+1 {
 		t.Fatalf("objects were written: %d -> %d", before, after)
+	}
+}
+
+func TestCancelSyncIsNotAFailure(t *testing.T) {
+	g := &gateStore{Memory: storage.NewMemory(), entered: make(chan struct{}, 1)}
+	e := newEnv(t, g)
+	act, _, _ := e.newAction(t, 3)
+	if err := e.m.CancelSync(ctx, act.ID); err != nil {
+		t.Fatalf("cancel while idle: %v", err)
+	}
+	if err := e.m.CancelSync(ctx, "nope"); api.Code(err) != "not-found" {
+		t.Fatalf("cancel unknown: %v", err)
+	}
+	sub, cancelSub := context.WithCancel(ctx)
+	defer cancelSub()
+	events, _ := e.m.Subscribe(sub)
+
+	g.set("block")
+	errc := make(chan error, 1)
+	go func() { _, err := e.m.Sync(ctx, act.ID); errc <- err }()
+	<-g.entered
+	if err := e.m.CancelSync(ctx, act.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errc:
+		if !errors.Is(err, api.ErrCancelled) {
+			t.Fatalf("sync err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel did not stop the sync")
+	}
+	st := e.state(t, act.ID)
+	if st.State != api.StateIdle || st.Running || st.Failures != 0 || st.LastOutcome != model.OutcomeCancelled || st.LastError != "" {
+		t.Fatalf("after cancel = %+v", st)
+	}
+	if msgs := e.rec.Messages(); len(msgs) != 0 {
+		t.Fatalf("notified: %v", msgs)
+	}
+	sawCancelled := false
+	for !sawCancelled {
+		select {
+		case ev := <-events:
+			sawCancelled = ev.Type == api.EventResult && ev.Result != nil && ev.Result.Outcome == model.OutcomeCancelled
+		case <-time.After(5 * time.Second):
+			t.Fatal("no cancelled result event")
+		}
+	}
+
+	// Nothing was left half-done: the lock is free and the next run converges.
+	g.set("")
+	res, err := e.m.Sync(ctx, act.ID)
+	if err != nil || res.Uploaded != 3 {
+		t.Fatalf("sync after cancel = %+v, %v", res, err)
+	}
+	res, err = e.m.Sync(ctx, act.ID)
+	if err != nil || res.Outcome != model.OutcomeOK || res.Uploaded+res.Downloaded+res.DeletedLocal+res.DeletedRemote != 0 {
+		t.Fatalf("third sync = %+v, %v", res, err)
+	}
+}
+
+// A cancel that finds nothing running must not leak into the next job.
+func TestCancelSyncWhenIdleDoesNotCancelNextJob(t *testing.T) {
+	e := newEnv(t, storage.NewMemory())
+	act, _, _ := e.newAction(t, 2)
+	for i := 0; i < 3; i++ {
+		if err := e.m.CancelSync(ctx, act.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := e.m.Sync(ctx, act.ID)
+	if err != nil || res.Uploaded != 2 {
+		t.Fatalf("sync after idle cancels = %+v, %v", res, err)
+	}
+	// A cancel after the job finished is also a no-op.
+	if err := e.m.CancelSync(ctx, act.ID); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.state(t, act.ID); st.LastOutcome != model.OutcomeOK {
+		t.Fatalf("after late cancel = %+v", st)
 	}
 }

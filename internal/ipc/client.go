@@ -221,6 +221,10 @@ func (c *Client) Resume(ctx context.Context, id string) error {
 	return c.call(ctx, "POST", "/actions/"+esc(id)+"/resume", nil, nil)
 }
 
+func (c *Client) CancelSync(ctx context.Context, id string) error {
+	return c.call(ctx, "POST", "/actions/"+esc(id)+"/cancel", nil, nil)
+}
+
 func (c *Client) PendingDeletes(ctx context.Context, id string) (*model.PendingDeletes, error) {
 	var v *model.PendingDeletes
 	return v, c.call(ctx, "GET", "/actions/"+esc(id)+"/pending-deletes", nil, &v)

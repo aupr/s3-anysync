@@ -78,6 +78,10 @@ type worker struct {
 
 	mu sync.Mutex
 	st wstate
+	// jobCancel cancels the running job's context; guarded by mu. The job
+	// context derives from w.ctx only (never from a caller's), so a job context
+	// that ends while w.ctx lives was cancelled by CancelSync.
+	jobCancel context.CancelFunc
 }
 
 func newWorker(m *Manager, id string) *worker {
@@ -121,13 +125,13 @@ func (w *worker) loop() {
 			if w.ctx.Err() != nil {
 				return
 			}
-			w.guard(func() { w.autoSync(reason) })
+			w.guard(func() { w.cancellable(func(c context.Context) { w.autoSync(c, reason) }) })
 		case <-retryC:
 			w.retry = nil
 			if w.ctx.Err() != nil {
 				return
 			}
-			w.guard(func() { w.autoSync("retry") })
+			w.guard(func() { w.cancellable(func(c context.Context) { w.autoSync(c, "retry") }) })
 		}
 	}
 }
@@ -145,7 +149,7 @@ func (w *worker) runJob(j *job) {
 	}
 	var v any
 	var err error
-	w.guard(func() { v, err = j.fn(w.ctx) }, &err)
+	w.guard(func() { w.cancellable(func(c context.Context) { v, err = j.fn(c) }) }, &err)
 	j.done <- jobResult{v, err}
 }
 
@@ -217,7 +221,7 @@ func (w *worker) do(ctx context.Context, fn func(ctx context.Context) (any, erro
 }
 
 // autoSync runs a sync for a trigger unless the state forbids it.
-func (w *worker) autoSync(reason string) {
+func (w *worker) autoSync(ctx context.Context, reason string) {
 	if w.ctx.Err() != nil {
 		return // cancelled or left: nothing may run, record or publish
 	}
@@ -231,7 +235,7 @@ func (w *worker) autoSync(reason string) {
 		}
 	}
 	w.m.log.Info("automatic sync", "action", w.id, "reason", reason)
-	w.runSync(func(ctx context.Context, r *engine.Runner) (model.SyncResult, error) { return r.Sync(ctx) })
+	w.runSync(ctx, func(ctx context.Context, r *engine.Runner) (model.SyncResult, error) { return r.Sync(ctx) })
 }
 
 func (w *worker) getRunner() (*engine.Runner, error) {
@@ -247,14 +251,14 @@ func (w *worker) getRunner() (*engine.Runner, error) {
 
 // runSync runs a sync-like engine call on the worker goroutine and updates
 // the state machine from its outcome.
-func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResult, error)) (model.SyncResult, error) {
+func (w *worker) runSync(ctx context.Context, f func(context.Context, *engine.Runner) (model.SyncResult, error)) (model.SyncResult, error) {
 	r, err := w.getRunner()
 	if err != nil {
 		w.afterRun(model.SyncResult{}, err)
 		return model.SyncResult{}, err
 	}
 	w.setRunning(true)
-	res, err := w.callEngine(f, r)
+	res, err := w.callEngine(ctx, f, r)
 	w.setRunning(false)
 	if errors.Is(err, engine.ErrInvalidInput) {
 		// The caller's request was wrong; the action did not fail.
@@ -262,6 +266,10 @@ func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResu
 	}
 	if w.ctx.Err() != nil {
 		return res, err // shutting down: don't record an interruption as a failure
+	}
+	if err != nil && ctx.Err() != nil {
+		w.afterCancel() // the user cancelled this run
+		return res, api.ErrCancelled
 	}
 	a, aerr := r.Action(), error(nil)
 	if w.runner != r {
@@ -278,7 +286,7 @@ func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResu
 
 // callEngine runs an engine call; a panic in it becomes an ordinary error
 // (so it is recorded as a failure and retried) and discards the runner.
-func (w *worker) callEngine(f func(context.Context, *engine.Runner) (model.SyncResult, error), r *engine.Runner) (res model.SyncResult, err error) {
+func (w *worker) callEngine(ctx context.Context, f func(context.Context, *engine.Runner) (model.SyncResult, error), r *engine.Runner) (res model.SyncResult, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			w.m.log.Error("panic in sync", "action", w.id, "panic", p, "stack", string(debug.Stack()))
@@ -286,7 +294,60 @@ func (w *worker) callEngine(f func(context.Context, *engine.Runner) (model.SyncR
 			res, err = model.SyncResult{}, fmt.Errorf("agent: internal error: %v", p)
 		}
 	}()
-	return f(w.ctx, r)
+	return f(ctx, r)
+}
+
+// cancellable runs f with a context that CancelSync can cancel.
+func (w *worker) cancellable(f func(ctx context.Context)) {
+	ctx, cancel := context.WithCancel(w.ctx)
+	w.mu.Lock()
+	w.jobCancel = cancel
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.jobCancel = nil
+		w.mu.Unlock()
+		cancel()
+	}()
+	f(ctx)
+}
+
+// cancelRunning drops a pending automatic trigger and cancels the running
+// engine job, if any; it reports whether a job was cancelled.
+func (w *worker) cancelRunning() bool {
+	select {
+	case <-w.wake:
+	default:
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.jobCancel == nil || !w.st.running {
+		return false
+	}
+	w.jobCancel()
+	return true
+}
+
+// afterCancel records a run the user cancelled. It is not a failure: the
+// state, failure count and error stay as they were before the run.
+func (w *worker) afterCancel() {
+	retryIn := time.Duration(0)
+	func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		st := &w.st
+		st.lastRun = time.Now().UTC()
+		st.lastOutcome, st.lastSummary = model.OutcomeCancelled, ""
+		if st.state == api.StateError && !st.permanent && w.retry == nil {
+			retryIn = w.m.backoff(st.failures) // a cancelled retry is re-armed
+			st.nextRun = st.lastRun.Add(retryIn)
+		}
+	}()
+	if retryIn > 0 {
+		w.retry = time.NewTimer(retryIn)
+	}
+	w.m.bus.publish(api.Event{Type: api.EventResult, ActionID: w.id, Result: &model.SyncResult{Outcome: model.OutcomeCancelled}})
+	w.publishState()
 }
 
 // snapshot copies the state; the lock never outlives the call.

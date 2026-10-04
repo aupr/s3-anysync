@@ -173,6 +173,7 @@ func (s *Server) routes() http.Handler {
 	h("POST /actions/{id}/sync", func(r *http.Request) (any, error) { return svc.Sync(r.Context(), id(r)) })
 	h("POST /actions/{id}/snapshot", func(r *http.Request) (any, error) { return svc.Snapshot(r.Context(), id(r)) })
 	h("POST /actions/{id}/pause", func(r *http.Request) (any, error) { return nil, svc.Pause(r.Context(), id(r)) })
+	h("POST /actions/{id}/cancel", func(r *http.Request) (any, error) { return nil, svc.CancelSync(r.Context(), id(r)) })
 	h("POST /actions/{id}/resume", func(r *http.Request) (any, error) { return nil, svc.Resume(r.Context(), id(r)) })
 	h("GET /actions/{id}/pending-deletes", func(r *http.Request) (any, error) { return svc.PendingDeletes(r.Context(), id(r)) })
 	h("POST /actions/{id}/approve-deletes", func(r *http.Request) (any, error) {
