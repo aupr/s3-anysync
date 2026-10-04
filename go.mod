@@ -9,6 +9,7 @@ require (
 	github.com/aws/smithy-go v1.28.2
 	github.com/bmatcuk/doublestar/v4 v4.10.2
 	github.com/google/uuid v1.6.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.60.1
