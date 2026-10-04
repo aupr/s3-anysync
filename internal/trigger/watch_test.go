@@ -290,7 +290,9 @@ func TestRootCreatedWithContentIsFiredByRescan(t *testing.T) {
 	expectFire(t, fired, "root appearing with content")
 }
 
-func TestRootRecreatedWithContentIsFiredByRescan(t *testing.T) {
+// Root removed and recreated with content fires. Both the event handler's
+// re-add of the recreated root and the rescan lead to a fire; either suffices.
+func TestRootRemovedAndRecreatedWithContentFires(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "root")
 	write(t, filepath.Join(root, "a.json"), "a")
@@ -416,4 +418,53 @@ func TestMaxWaitFiresDuringContinuousStream(t *testing.T) {
 	if got := n.Load(); got < 2 {
 		t.Fatalf("fires during a continuous stream = %d, want >= 2", got)
 	}
+}
+
+func (w *Watcher) watchedCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.watched)
+}
+
+func TestFileRootParentSubtreesAreNotWatched(t *testing.T) {
+	home := t.TempDir()
+	cfg := filepath.Join(home, ".gitconfig")
+	write(t, cfg, "a")
+	fired := make(chan struct{}, 16)
+	w, err := Watch(WatchOptions{Roots: []Root{{Path: cfg}}, Debounce: 100 * time.Millisecond, Fire: func() { fired <- struct{}{} }, Rescan: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.Close() })
+	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 30; i++ {
+		write(t, filepath.Join(home, "repo", "d"+strings.Repeat("x", i%3), "n"+string(rune('a'+i)), "f.txt"), "x")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := w.watchedCount(); n > 2 {
+		t.Fatalf("watching %d directories, want only the parent(s)", n)
+	}
+	for len(fired) > 0 {
+		<-fired
+	}
+	write(t, cfg, "b")
+	expectFire(t, fired, "write to the file root")
+}
+
+func TestDirRenamedInsideRootKeepsBeingWatched(t *testing.T) {
+	dir := t.TempDir()
+	fired := watchFor(t, []Root{{Path: dir, Dir: true}}, nil)
+	write(t, filepath.Join(dir, "old", "deep", "a.json"), "a")
+	expectFire(t, fired, "create")
+	time.Sleep(150 * time.Millisecond)
+	if err := os.Rename(filepath.Join(dir, "old"), filepath.Join(dir, "new")); err != nil {
+		t.Fatal(err)
+	}
+	expectFire(t, fired, "rename")
+	time.Sleep(150 * time.Millisecond)
+	write(t, filepath.Join(dir, "new", "deep", "a.json"), "a2")
+	expectFire(t, fired, "write to an existing file under the new name")
+	time.Sleep(150 * time.Millisecond)
+	write(t, filepath.Join(dir, "new", "deep", "b.json"), "b")
+	expectFire(t, fired, "new file under the new name")
 }

@@ -221,6 +221,16 @@ func (w *Watcher) addTreeLocked(dir string) bool {
 	return !was && w.watched[dir]
 }
 
+// inDirRootLocked reports whether p is a directory root or inside one.
+func (w *Watcher) inDirRootLocked(p string) bool {
+	for _, d := range w.dirs {
+		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // forgetTreeLocked stops watching p and everything below it.
 func (w *Watcher) forgetTreeLocked(p string) {
 	prefix := p + string(filepath.Separator)
@@ -244,13 +254,7 @@ func (w *Watcher) relevant(p string, op fsnotify.Op) bool {
 		w.mu.Unlock()
 		return true
 	}
-	inRoot := w.files[p]
-	for _, d := range w.dirs {
-		if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
-			inRoot = true
-			break
-		}
-	}
+	inRoot := w.files[p] || w.inDirRootLocked(p)
 	w.mu.Unlock()
 	if !inRoot {
 		return false
@@ -311,7 +315,11 @@ func (w *Watcher) run() {
 				if info, err := os.Lstat(p); err == nil {
 					w.mu.Lock()
 					if info.IsDir() {
-						w.addTreeLocked(p)
+						if w.inDirRootLocked(p) {
+							w.addTreeLocked(p)
+						} else if w.parents[p] {
+							w.addDirLocked(p)
+						}
 					}
 					w.mu.Unlock()
 				}
