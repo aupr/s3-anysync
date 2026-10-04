@@ -531,3 +531,39 @@ func TestShuttingDownIsUnavailable(t *testing.T) {
 		t.Fatalf("errShuttingDown = %v (%s)", errShuttingDown, api.Code(errShuttingDown))
 	}
 }
+
+func TestItemContainingDataFolderIsRefusedPermanently(t *testing.T) {
+	store := storage.NewMemory()
+	e := newEnv(t, store)
+	act, it, _ := e.newAction(t, 1)
+	// Bypass the app-level validation: an item mapped to the data folder, as
+	// an older version or a hand-edited database could have it.
+	local, err := e.a.Action(act.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range local.Items {
+		if local.Items[i].ID == it.ID {
+			local.Items[i].LocalPaths[e.a.MachineID] = e.data
+		}
+	}
+	if err := e.a.DB.PutAction(local); err != nil {
+		t.Fatal(err)
+	}
+	before := len(store.Keys())
+	if _, err := e.m.Sync(ctx, act.ID); !errors.Is(err, engine.ErrProtectedPath) {
+		t.Fatalf("want ErrProtectedPath, got %v", err)
+	}
+	st := e.state(t, act.ID)
+	if st.State != api.StateError || !st.NextRun.IsZero() {
+		t.Fatalf("status = %+v", st)
+	}
+	for _, k := range store.Keys() {
+		if strings.Contains(k, "state.db") || strings.Contains(k, "ipc.token") || strings.Contains(k, "agent.lock") {
+			t.Fatalf("the agent's own file was uploaded: %s", k)
+		}
+	}
+	if after := len(store.Keys()); after > before+1 {
+		t.Fatalf("objects were written: %d -> %d", before, after)
+	}
+}

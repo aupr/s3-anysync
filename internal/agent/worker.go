@@ -19,7 +19,7 @@ var errInvalidSchedule = errors.New("invalid schedule")
 
 // permanentErrs are never retried automatically: they need the user.
 var permanentErrs = []error{
-	engine.ErrDecrypt, engine.ErrPassphraseMissing, engine.ErrKeyCheckMissing, engine.ErrRootMissing,
+	engine.ErrDecrypt, engine.ErrPassphraseMissing, engine.ErrKeyCheckMissing, engine.ErrRootMissing, engine.ErrProtectedPath,
 	storage.ErrAccessDenied, storage.ErrNoSuchBucket, errInvalidSchedule,
 }
 

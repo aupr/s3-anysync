@@ -129,6 +129,8 @@ func explain(err error) string {
 		return "  hint: this action is encrypted; set S3_ANYSYNC_PASSPHRASE and re-run the same command (action create / action join / sync)."
 	case errors.Is(err, engine.ErrRootMissing):
 		return "  hint: an item's folder is missing (unmounted drive or renamed folder?); restore or re-mount it. If it was removed on purpose, unmap the item and map it again."
+	case errors.Is(err, engine.ErrProtectedPath):
+		return "  hint: this folder contains s3-anysync's own data folder; choose a narrower folder."
 	case errors.Is(err, storage.ErrLocked):
 		return "  hint: another machine is syncing this action; try again in a minute."
 	case errors.Is(err, storage.ErrLockLost):

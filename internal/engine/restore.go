@@ -69,6 +69,9 @@ func (r *Runner) Restore(ctx context.Context, ts string, only []string, target R
 	if err != nil {
 		return res, err
 	}
+	if err := CheckProtected(ms, r.d.Protected); err != nil {
+		return res, err
+	}
 
 	held, release, err := r.d.holdLock(ctx, r.layout)
 	if err != nil {

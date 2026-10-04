@@ -29,6 +29,7 @@ func TestCodesRoundTrip(t *testing.T) {
 		ErrNotFound:                 "not-found",
 		ErrInvalid:                  "invalid",
 		engine.ErrInvalidInput:      "invalid",
+		engine.ErrProtectedPath:     "invalid",
 		ErrUnsupported:              "unsupported",
 		ErrUnavailable:              "unavailable",
 	}

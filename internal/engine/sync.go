@@ -98,6 +98,9 @@ func (r *Runner) run(ctx context.Context, kind string, overrides *resolveReq) (r
 	if err != nil {
 		return res, err
 	}
+	if err = CheckProtected(ms, r.d.Protected); err != nil {
+		return res, err
+	}
 	for attempt := 0; attempt < maxSyncAttempts; attempt++ {
 		var retry bool
 		res, retry, err = r.syncOnce(ctx, ms, overrides)

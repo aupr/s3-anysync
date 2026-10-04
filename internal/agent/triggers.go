@@ -154,7 +154,11 @@ func (w *worker) buildTriggers(a model.Action) error {
 	if !a.Triggers.OnChange {
 		return nil
 	}
-	if ms, err := engine.BuildMappings(a, w.m.app.MachineID, paths.Expand); err != nil {
+	ms, err := engine.BuildMappings(a, w.m.app.MachineID, paths.Expand)
+	if err == nil {
+		err = engine.CheckProtected(ms, []string{w.m.app.DataDir})
+	}
+	if err != nil {
 		w.m.log.Warn("watch paths", "action", w.id, "err", err)
 	} else {
 		var roots []trigger.Root

@@ -29,6 +29,9 @@ var (
 	// is missing although content under it was synced before; it is refused
 	// rather than treated as a mass deletion.
 	ErrRootMissing = errors.New("item folder is missing but its content was synced before")
+	// ErrProtectedPath: an item's local path is, contains or lies inside the
+	// agent's own data folder (or another protected path).
+	ErrProtectedPath = errors.New("this folder contains s3-anysync's own data folder")
 )
 
 const (
@@ -63,6 +66,9 @@ type Deps struct {
 	BackupRoot string
 	LockMode   storage.LockMode
 	LockSettle time.Duration
+	// Protected are paths no item may equal, contain or lie inside (the
+	// agent's data folder): syncing them would sync the agent's own state.
+	Protected []string
 	// Expand resolves item paths; nil means paths.Expand.
 	Expand func(string) (string, error)
 	// Now is the clock; nil means time.Now.

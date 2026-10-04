@@ -140,6 +140,7 @@ func (a *App) deps(p model.Profile, actionID string, encrypted bool) (engine.Dep
 		Storage: st, Repo: a.DB, MachineID: a.MachineID, MachineName: a.CurrentMachineName(),
 		BackupRoot: filepath.Join(a.DataDir, "local-backups"),
 		LockMode:   lockMode(p), LockSettle: a.LockSettle, Log: a.Log,
+		Protected: []string{a.DataDir},
 	}
 	if encrypted {
 		pass, err := a.Secrets.Get(secrets.ActionPassphraseKey(actionID))
@@ -253,13 +254,23 @@ func (a *App) updateShared(ctx context.Context, actionID string, mutate func(*mo
 	return updated, a.savePutAction(updated)
 }
 
+// checkLocalPath validates a new item path: it must expand, and must not
+// overlap the agent's data folder (engine.ErrProtectedPath).
+func (a *App) checkLocalPath(localPath string) error {
+	abs, err := paths.Expand(localPath)
+	if err != nil {
+		return err
+	}
+	return engine.CheckLocalPath(abs, []string{a.DataDir})
+}
+
 // AddItem adds a file or directory, mapped to localPath on this machine.
 func (a *App) AddItem(ctx context.Context, actionID string, it model.Item, localPath string) (model.Item, error) {
 	name, err := model.NormalizeRemoteName(it.RemoteName)
 	if err != nil {
 		return it, err
 	}
-	if _, err := paths.Expand(localPath); err != nil {
+	if err := a.checkLocalPath(localPath); err != nil {
 		return it, err
 	}
 	it.ID = uuid.NewString()
@@ -279,7 +290,7 @@ func (a *App) AddItem(ctx context.Context, actionID string, it model.Item, local
 
 // MapItem sets this machine's local path for an existing item.
 func (a *App) MapItem(ctx context.Context, actionID, itemID, localPath string) error {
-	if _, err := paths.Expand(localPath); err != nil {
+	if err := a.checkLocalPath(localPath); err != nil {
 		return err
 	}
 	// Pointing an item at a (new) local path starts it from scratch: its old

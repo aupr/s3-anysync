@@ -390,3 +390,27 @@ func TestRemoveItemKeepsData(t *testing.T) {
 		t.Fatalf("sync after remove = %+v, %v", res, err)
 	}
 }
+
+func TestItemsCannotContainTheDataFolder(t *testing.T) {
+	a, _, act, file, folder, _ := manageFixture(t, false)
+	data := a.DataDir
+	os.MkdirAll(filepath.Join(data, "logs"), 0o755)
+	bad := map[string]string{
+		"data folder": data,
+		"its parent":  filepath.Dir(data),
+		"subfolder":   filepath.Join(data, "logs"),
+	}
+	for name, p := range bad {
+		if _, err := a.AddItem(ctx, act.ID, model.Item{RemoteName: "x", Type: model.ItemDir}, p); !errors.Is(err, engine.ErrProtectedPath) {
+			t.Errorf("AddItem %s: %v", name, err)
+		}
+		if err := a.MapItem(ctx, act.ID, folder.ID, p); !errors.Is(err, engine.ErrProtectedPath) {
+			t.Errorf("MapItem %s: %v", name, err)
+		}
+	}
+	got, _ := a.Action(act.ID)
+	if len(got.Items) != 2 || got.Items[1].LocalPaths[a.MachineID] == data {
+		t.Fatalf("a refused item was published: %+v", got.Items)
+	}
+	_ = file
+}
