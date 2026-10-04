@@ -133,6 +133,8 @@ func explain(err error) string {
 		return "  hint: another machine is syncing this action; try again in a minute."
 	case errors.Is(err, storage.ErrLockLost):
 		return "  hint: this machine lost the cloud lock during the run (it took too long or the connection dropped); nothing is corrupted, run the sync again."
+	case errors.Is(err, errAgentRunning):
+		return "  hint: another agent, or a CLI command running in-process, holds this data folder; retry in a moment (stop the other agent first if it keeps running)."
 	case errors.Is(err, datalock.ErrBusy):
 		return "  hint: another s3-anysync process owns the data folder; if the agent is starting or stopping, try again in a moment."
 	}

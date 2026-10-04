@@ -20,7 +20,11 @@ import (
 func init() { runtime.LockOSThread() }
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, connectDefault))
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "run" {
+		os.Exit(runAgentCommand(args[1:], os.Stderr))
+	}
+	os.Exit(run(args, os.Stdout, os.Stderr, connectDefault))
 }
 
 // connectDefault connects to the user's real data folder and keychain.
