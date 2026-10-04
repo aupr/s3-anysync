@@ -3,6 +3,7 @@ module github.com/niceit/s3-anysync
 go 1.27.1
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.6
