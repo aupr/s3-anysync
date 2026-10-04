@@ -271,15 +271,8 @@ func (a *App) MapItem(ctx context.Context, actionID, itemID, localPath string) e
 	// deletions. Drop it BEFORE publishing, so a failure after the publish
 	// cannot leave a stale baseline behind (an empty baseline is always safe).
 	var remoteName string
-	if cur, err := a.DB.GetAction(actionID); err == nil {
-		for _, it := range cur.Items {
-			if it.ID == itemID {
-				if err := a.dropItemBaseline(actionID, it.RemoteName); err != nil {
-					return err
-				}
-				break
-			}
-		}
+	if err := a.dropBaselineOfItem(actionID, itemID); err != nil {
+		return err
 	}
 	_, err := a.updateShared(ctx, actionID, func(act *model.Action) error {
 		for i := range act.Items {
