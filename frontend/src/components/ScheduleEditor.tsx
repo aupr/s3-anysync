@@ -6,8 +6,34 @@ import { presetLabels, presetOf, scheduleFor, weekdays, type Preset } from '../l
 import type { Schedule } from '../lib/types'
 import { Field, Input, Select } from './ui'
 
+// wholeMinutes parses a whole number; anything else (empty, "1.5", "x") is
+// left for the user to finish. 0 is passed on so the agent explains it.
+function wholeMinutes(s: string): number | undefined {
+  return /^\d+$/.test(s.trim()) ? Number(s.trim()) : undefined
+}
+
+function fits(p: Preset, v: Schedule): boolean {
+  switch (p) {
+    case 'none': return v.kind === 'none'
+    case 'every15': return v.kind === 'interval' && v.everyMinutes === 15
+    case 'hourly': return v.kind === 'interval' && v.everyMinutes === 60
+    case 'interval': return v.kind === 'interval'
+    default: return v.kind === p
+  }
+}
+
 export function ScheduleEditor({ value, onChange }: { value: Schedule; onChange: (s: Schedule) => void }) {
-  const preset = presetOf(value)
+  const [preset, setPreset] = useState<Preset>(() => presetOf(value))
+  const [minutes, setMinutes] = useState(() => String(value.everyMinutes ?? 30))
+  // The chosen preset is kept locally (typing 15 must not swap the input for
+  // a preset); it follows the value only when the value no longer fits it.
+  useEffect(() => {
+    if (!fits(preset, value)) setPreset(presetOf(value))
+    if (value.kind === 'interval' && value.everyMinutes !== undefined && value.everyMinutes !== wholeMinutes(minutes)) {
+      setMinutes(String(value.everyMinutes))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
   const [runs, setRuns] = useState<string[]>([])
   const [error, setError] = useState('')
   useEffect(() => {
@@ -28,14 +54,24 @@ export function ScheduleEditor({ value, onChange }: { value: Schedule; onChange:
   return (
     <div className="space-y-2">
       <Field label="Schedule">
-        <Select aria-label="Schedule" value={preset} onChange={(e) => onChange(scheduleFor(e.target.value as Preset, value))}>
+        <Select aria-label="Schedule" value={preset} onChange={(e) => {
+          const p = e.target.value as Preset
+          const next = scheduleFor(p, value)
+          setPreset(p)
+          if (next.kind === 'interval' && next.everyMinutes !== undefined) setMinutes(String(next.everyMinutes))
+          onChange(next)
+        }}>
           {(Object.keys(presetLabels) as Preset[]).map((p) => <option key={p} value={p}>{presetLabels[p]}</option>)}
         </Select>
       </Field>
       {preset === 'interval' && (
         <Field label="Minutes between runs">
-          <Input aria-label="Minutes between runs" type="number" min={1} value={value.everyMinutes ?? 30}
-            onChange={(e) => onChange({ ...value, everyMinutes: Number(e.target.value) })} />
+          <Input aria-label="Minutes between runs" inputMode="numeric" value={minutes}
+            onChange={(e) => {
+              setMinutes(e.target.value)
+              const n = wholeMinutes(e.target.value)
+              if (n !== undefined) onChange({ ...value, kind: 'interval', everyMinutes: n })
+            }} />
         </Field>
       )}
       {preset === 'weekly' && (

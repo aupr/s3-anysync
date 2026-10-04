@@ -112,15 +112,19 @@ Build (macOS needs the Xcode command-line tools); the output is in `cmd/gui/buil
 
 ```bash
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
-cd cmd/gui && wails build
+cd frontend && npm install && npm run build   # fills cmd/gui/dist
+cd ../cmd/gui && wails build
 ```
 
-The agent binary must sit next to the GUI binary, or set `S3_ANYSYNC_AGENT` to its path.
+A plain `go build ./cmd/gui` on a fresh clone embeds an empty `cmd/gui/dist` (only `.keep`), so run the frontend build first to get a working GUI binary.
+
+On macOS `wails build` produces `cmd/gui/build/bin/s3-anysync.app`: place the agent binary in `s3-anysync.app/Contents/MacOS/` next to the GUI binary. On other platforms it must sit next to the GUI binary. Alternatively set `S3_ANYSYNC_AGENT` to its path.
 
 Development: run the frontend tests with `cd frontend && npm install && npm test`. To run the GUI against a throwaway data folder, start an agent first, then the GUI from `cmd/gui`, both with the same data folder and the file secret store:
 
 ```bash
-S3_ANYSYNC_DATA_DIR=/tmp/s3as-dev S3_ANYSYNC_SECRETS=file s3-anysync-agent run --no-tray --no-notify
+go build -o bin/s3-anysync-agent ./cmd/agent
+S3_ANYSYNC_DATA_DIR=/tmp/s3as-dev S3_ANYSYNC_SECRETS=file ./bin/s3-anysync-agent run --no-tray --no-notify
 cd cmd/gui && S3_ANYSYNC_DATA_DIR=/tmp/s3as-dev S3_ANYSYNC_SECRETS=file wails dev
 ```
 
@@ -130,7 +134,7 @@ Screens:
 - **Profiles**: bucket connections; add, edit, test and remove (removal is refused while an action uses the profile).
 - **Conflicts**: shows both versions with a diff and applies your local/cloud choice per path.
 - **Deletions to review**: lists the paths a guarded sync wanted to delete; approve exactly what you reviewed.
-- **Activity**: recent sync results across all actions.
+- **Activity**: sync results, state changes and errors, with a filter by action.
 - **Settings**: log level, machine name and autostart at login.
 
 Deletions you choose when resolving a conflict bypass the delete guard; the GUI asks you to confirm them in the resolver.
@@ -159,7 +163,7 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 
 ## Development
 
-`S3_ANYSYNC_SECRETS=file` keeps secrets unencrypted in `<data dir>/secrets.json` (mode 0600) instead of the keychain. Only for development and tests; any other value is an error. Use the same value for the agent and for `wails dev` so both see the same secrets (see Desktop GUI).
+`S3_ANYSYNC_SECRETS=file` keeps secrets unencrypted in `<data dir>/secrets.json` (mode 0600) instead of the keychain. Only for development and tests; any other value is an error. Use the same value for the agent and for `wails dev` so both see the same secrets (see Desktop GUI). With this setting the profile form's hint "Stored in the system keychain" does not apply.
 
 ## Known limitations
 
@@ -177,7 +181,7 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 - A slow mass deletion spread over more than the watcher's MaxWait can stay under the delete guard threshold in each run (snapshots keep deletions for 30 days).
 - The Windows pieces (named pipe with its owner check, tray, HKCU Run autostart) are cross-compiled but UNTESTED on Windows; the pipe-owner check in particular has never run there.
 - The tray, desktop notifications and autostart have not been checked by hand on a real desktop yet (pending).
-- The GUI is not covered by automated end-to-end tests (only Go and frontend unit tests); it has been checked by hand.
+- The GUI is not covered by automated end-to-end tests (only Go and frontend unit tests); the hand-check of the GUI is performed as part of the release checklist and is not automated.
 - The Settings autostart switch always changes the real per-user login item, even when the GUI runs against a development data folder.
 - Resolving a conflict sends only your choices, not the conflict contents you reviewed. If the same path is saved again with new content between viewing and Apply, your choice would apply to content you did not see. The GUI clears its choices after a `conflict` outcome, but a sync from another window or the CLI can still race.
 - If removing an action's passphrase fails after you leave the action, a stale worker can stay in the agent until it restarts.

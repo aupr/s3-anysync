@@ -57,3 +57,32 @@ test('a weekly schedule without a weekday shows Sunday', async () => {
   expect((screen.getByLabelText('Day') as HTMLSelectElement).value).toBe('0')
   expect(screen.getByLabelText('Time (24h, HH:MM)')).toHaveValue('07:30')
 })
+
+test('typing 15 or 150 into the interval input keeps the input', async () => {
+  bindings.PreviewSchedule.mockResolvedValue([])
+  render(<Host initial={{ kind: 'interval', everyMinutes: 45 }} />)
+  const box = () => screen.getByLabelText('Minutes between runs')
+  fireEvent.change(box(), { target: { value: '15' } })
+  expect(box()).toHaveValue('15')
+  fireEvent.change(box(), { target: { value: '150' } })
+  expect(box()).toHaveValue('150')
+  fireEvent.change(box(), { target: { value: '' } })
+  expect(box()).toHaveValue('')
+  fireEvent.change(box(), { target: { value: '60' } })
+  expect(box()).toHaveValue('60')
+})
+
+test('choosing the 15 minute preset hides the input', async () => {
+  bindings.PreviewSchedule.mockResolvedValue([])
+  render(<Host initial={{ kind: 'interval', everyMinutes: 45 }} />)
+  fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: 'every15' } })
+  expect(screen.queryByLabelText('Minutes between runs')).toBeNull()
+  expect((screen.getByLabelText('Schedule') as HTMLSelectElement).value).toBe('every15')
+})
+
+test('an outside change to another kind resyncs the preset', async () => {
+  bindings.PreviewSchedule.mockResolvedValue([])
+  const { rerender } = render(<ScheduleEditor value={{ kind: 'interval', everyMinutes: 45 }} onChange={() => {}} />)
+  rerender(<ScheduleEditor value={{ kind: 'none' }} onChange={() => {}} />)
+  expect((screen.getByLabelText('Schedule') as HTMLSelectElement).value).toBe('none')
+})

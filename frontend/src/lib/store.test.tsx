@@ -2,6 +2,7 @@ import { vi } from 'vitest'
 vi.mock('./bridge', () => import('../test/mockBridge'))
 import { act, render, screen } from '@testing-library/react'
 import { bindings, emit } from '../test/mockBridge'
+import { api } from './api'
 import { ACTIVITY_LIMIT, initialState, reducer, StoreProvider, useStore } from './store'
 import type { ActionStatus } from './types'
 
@@ -95,4 +96,19 @@ test('the status reducer keeps listed actions', () => {
   let s = reducer(initialState, { type: 'actions', list: [{ ...st('a', 'idle'), running: true }] })
   s = reducer(s, { type: 'status', status: { actions: [st('a', 'idle')] } as never, keep: ['a'] })
   expect(s.actions.a.running).toBe(true)
+})
+
+test('a not-found rejection refetches status and profiles once', async () => {
+  bindings.ConnectionState.mockResolvedValue({ connected: true })
+  bindings.Status.mockResolvedValue({ machineId: 'm', machineName: 'mac', version: 'v', agent: true, actions: [st('a', 'idle')] })
+  bindings.Profiles.mockResolvedValue([])
+  bindings.Pause.mockRejectedValue('{"code":"not-found","message":"gone"}')
+  render(<StoreProvider><Probe /></StoreProvider>)
+  expect(await screen.findByText('on:a')).toBeInTheDocument()
+  bindings.Status.mockClear()
+  bindings.Profiles.mockClear()
+  await Promise.allSettled([api.pause('a'), api.pause('a')])
+  await new Promise((r) => setTimeout(r, 700))
+  expect(bindings.Status).toHaveBeenCalledTimes(1)
+  expect(bindings.Profiles).toHaveBeenCalledTimes(1)
 })

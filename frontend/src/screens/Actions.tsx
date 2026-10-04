@@ -12,7 +12,7 @@ export function Actions() {
   const { navigate } = useRouter()
   const cmd = useActionCommands()
   const [wizard, setWizard] = useState<'new' | 'join' | null>(null)
-  // Actions with a command request in flight; their buttons are disabled so a
+  // Id:command pairs with a request in flight; their buttons are disabled so a
   // second click cannot start a second request.
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set())
   const alive = useRef(true)
@@ -20,13 +20,14 @@ export function Actions() {
     alive.current = true
     return () => { alive.current = false }
   }, [])
-  const run = async (id: string, fn: (id: string) => Promise<unknown>) => {
-    if (pending.has(id)) return
-    setPending((s) => new Set(s).add(id))
+  const run = async (id: string, command: string, fn: (id: string) => Promise<unknown>) => {
+    const key = `${id}:${command}`
+    if (pending.has(key)) return
+    setPending((s) => new Set(s).add(key))
     try {
       await fn(id)
     } finally {
-      if (alive.current) setPending((s) => { const n = new Set(s); n.delete(id); return n })
+      if (alive.current) setPending((s) => { const n = new Set(s); n.delete(key); return n })
     }
   }
   const list = Object.values(state.actions).sort((a, b) => a.action.name.localeCompare(b.action.name))
@@ -49,7 +50,7 @@ export function Actions() {
               const id = a.action.id
               const name = a.action.name
               const paused = a.state === 'paused'
-              const wait = pending.has(id)
+              const busy = (c: string) => pending.has(`${id}:${c}`)
               return (
                 <tr key={id} className="border-t border-zinc-200 dark:border-zinc-800">
                   <td className={td}>
@@ -69,11 +70,11 @@ export function Actions() {
                   <td className={td}>{isZeroTime(a.nextRun) ? '—' : formatTime(a.nextRun)}</td>
                   <td className={`${td} space-x-2 whitespace-nowrap text-right`}>
                     {a.running
-                      ? <Button aria-label={`Cancel ${name}`} disabled={wait} onClick={() => run(id, cmd.cancel)}>Cancel</Button>
-                      : <Button aria-label={`Sync now ${name}`} onClick={() => run(id, cmd.sync)} disabled={paused || wait}>Sync now</Button>}
+                      ? <Button aria-label={`Cancel ${name}`} disabled={busy('cancel')} onClick={() => run(id, 'cancel', cmd.cancel)}>Cancel</Button>
+                      : <Button aria-label={`Sync now ${name}`} onClick={() => run(id, 'sync', cmd.sync)} disabled={paused || busy('sync')}>Sync now</Button>}
                     {paused
-                      ? <Button aria-label={`Resume ${name}`} disabled={wait} onClick={() => run(id, cmd.resume)}>Resume</Button>
-                      : <Button aria-label={`Pause ${name}`} disabled={wait} onClick={() => run(id, cmd.pause)}>Pause</Button>}
+                      ? <Button aria-label={`Resume ${name}`} disabled={busy('resume')} onClick={() => run(id, 'resume', cmd.resume)}>Resume</Button>
+                      : <Button aria-label={`Pause ${name}`} disabled={busy('pause')} onClick={() => run(id, 'pause', cmd.pause)}>Pause</Button>}
                   </td>
                 </tr>
               )

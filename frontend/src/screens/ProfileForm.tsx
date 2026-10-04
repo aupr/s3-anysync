@@ -109,7 +109,7 @@ export function ProfileForm({ profile, onSaved, onCancel }: { profile?: Profile;
         <Field label="Bucket"><Input aria-label="Bucket" value={p.bucket} onChange={(e) => set('bucket', e.target.value)} /></Field>
         <Field label="Folder in the bucket" hint="Optional."><Input aria-label="Folder in the bucket" value={p.rootPrefix} onChange={(e) => set('rootPrefix', e.target.value)} /></Field>
         <Field label="Access key ID"><Input aria-label="Access key ID" value={p.accessKeyId} onChange={(e) => set('accessKeyId', e.target.value)} /></Field>
-        <Field label="Secret access key" hint={editing ? 'Leave empty to keep the stored secret.' : 'Stored in the system keychain.'}>
+        <Field label="Secret access key" hint={editing ? 'Leave empty to keep the stored secret.' : 'Stored in the system keychain (or in the development secrets file when S3_ANYSYNC_SECRETS=file is set).'}>
           <Input aria-label="Secret access key" type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
         </Field>
       </div>

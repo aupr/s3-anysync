@@ -1,7 +1,8 @@
 import { vi } from 'vitest'
 vi.mock('../lib/bridge', () => import('../test/mockBridge'))
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { bindings } from '../test/mockBridge'
+import { act } from '@testing-library/react'
+import { bindings, emit } from '../test/mockBridge'
 import App from '../App'
 import type { ActionStatus } from '../lib/types'
 
@@ -314,4 +315,17 @@ test('join: Escape on the map step after joining navigates to Items with a toast
   fireEvent.keyDown(window, { key: 'Escape' })
   expect(await screen.findByText('Joined. Map the items on the Items tab to start syncing here.')).toBeInTheDocument()
   await waitFor(() => expect(screen.queryByText('Map Terminal on this machine')).toBeNull())
+})
+
+test('cancel stays enabled while the sync started from the same row is pending', async () => {
+  boot([action()])
+  bindings.Sync.mockImplementation(() => new Promise(() => {}))
+  bindings.CancelSync.mockResolvedValue(undefined)
+  fireEvent.click(await screen.findByRole('button', { name: 'Sync now Editor' }))
+  await waitFor(() => expect(bindings.Sync).toHaveBeenCalledWith('a1'))
+  act(() => emit('agent:event', { type: 'action.state', actionId: 'a1', status: action({ running: true }), time: 't' }))
+  const cancel = await screen.findByRole('button', { name: 'Cancel Editor' })
+  expect(cancel).toBeEnabled()
+  fireEvent.click(cancel)
+  await waitFor(() => expect(bindings.CancelSync).toHaveBeenCalledWith('a1'))
 })

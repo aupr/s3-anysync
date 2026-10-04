@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type Dispatch, type ReactNode } from 'react'
-import { api } from './api'
+import { api, NOT_FOUND_EVENT } from './api'
 import { onEvent } from './bridge'
 import { stateLabels, summarizeResult } from './format'
 import type { ActionStatus, AgentEvent, ConnState, Profile, Status } from './types'
@@ -138,7 +138,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     })
     // A connection event that arrived first is newer than this initial answer.
     api.connectionState().then((conn) => { if (!sawConnEvent) onConn(conn) }).catch(quiet)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onNotFound = () => {
+      if (timer) return
+      timer = setTimeout(() => {
+        timer = undefined
+        refresh().catch(quiet)
+      }, 500)
+    }
+    window.addEventListener(NOT_FOUND_EVENT, onNotFound)
     return () => {
+      window.removeEventListener(NOT_FOUND_EVENT, onNotFound)
+      if (timer) clearTimeout(timer)
       offConn()
       offEv()
     }

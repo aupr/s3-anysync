@@ -26,9 +26,14 @@ export function toAgentError(e: unknown): AgentError {
   return new AgentError('internal', raw)
 }
 
+export const NOT_FOUND_EVENT = 's3as:not-found'
+
 function call<T>(name: string, ...args: unknown[]): Promise<T> {
   return Promise.resolve().then(() => bindings[name](...args) as Promise<T>).catch((e: unknown) => {
-    throw toAgentError(e)
+    const err = toAgentError(e)
+    // The store listens and refetches: the thing the user acted on is gone.
+    if (err.code === 'not-found' && typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(NOT_FOUND_EVENT))
+    throw err
   })
 }
 
