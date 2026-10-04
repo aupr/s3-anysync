@@ -142,10 +142,15 @@ func runAgentCommand(args []string, stderr io.Writer) int {
 		reportError(stderr, err)
 		return 1
 	}
+	sec, err := secrets.FromEnv(dir)
+	if err != nil {
+		reportError(stderr, err)
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = runAgent(ctx, agentEnv{
-		dataDir: dir, secrets: secrets.NewKeyring(), autostart: defaultAutostart(), notifier: notify.NewDesktop(),
+		dataDir: dir, secrets: sec, autostart: defaultAutostart(), notifier: notify.NewDesktop(),
 		tray: !*noTray, verbose: *verbose, stderr: stderr,
 	})
 	if err != nil {

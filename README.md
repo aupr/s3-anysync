@@ -124,6 +124,10 @@ S3_TEST_ENDPOINT=http://localhost:9000 S3_TEST_KEY=minio S3_TEST_SECRET=minio123
 
 The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects.
 
+## Development
+
+`S3_ANYSYNC_SECRETS=file` keeps secrets unencrypted in `<data dir>/secrets.json` (mode 0600) instead of the keychain. Only for development and tests; any other value is an error.
+
 ## Known limitations
 
 - `restore --to cloud` on a local-to-cloud machine is undone by that machine's next sync.

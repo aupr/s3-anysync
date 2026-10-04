@@ -15,10 +15,10 @@ Out of scope (Plan 4 or later): the Windows `-H=windowsgui` build and console/CL
 
 | Addition | Behavior |
 |---|---|
-| `UpdateProfile(ctx, req UpdateProfileRequest) (model.Profile, error)` | Replaces the profile's fields. `Secret == ""` keeps the stored secret; a non-empty secret replaces it in the keychain. Unknown ID → `not-found`. Invalid fields → `invalid`. Running workers of actions that use the profile are rebuilt with the new settings (same path as other runner rebuilds). |
+| `UpdateProfile(ctx, req UpdateProfileRequest) (model.Profile, error)` | Replaces the profile's fields. `Secret == ""` keeps the stored secret; a non-empty secret replaces it in the keychain. Unknown ID → `not-found`. Invalid fields → `invalid`. Changing `Bucket` or `RootPrefix` while an action uses the profile is refused with `in-use`. Changing endpoint, bucket or prefix resets `ConditionalWrites` to false (unknown until the next Test connection). Running workers of actions that use the profile are rebuilt with the new settings (same path as other runner rebuilds). |
 | `RemoveProfile(ctx, id) error` | Refused with new code `in-use` (HTTP 409, sentinel `api.ErrInUse`) while any joined action uses the profile; the message names the actions. Otherwise deletes the profile row and its keychain secret (a missing secret is not an error). |
-| `CancelSync(ctx, actionID) error` | Cancels the context of the action's running job, if any (no-op, no error, when idle). Queued jobs of that action are dropped. A cancelled job does not count as a failure, does not start backoff and does not notify; the action returns to its previous non-error state; the result outcome is `cancelled`. The engine's existing cancellation paths (lock release, baseline only after a full apply) are relied on and covered by a test. |
-| `UpdateRules(ctx, actionID, rules, expected time.Time)` | `expected` is the `Action.UpdatedAt` the editor loaded. If the action's current `UpdatedAt` (local copy refreshed from the bucket before the write) differs, nothing is written and the new code `conflict-edit` (HTTP 409, sentinel `engine.ErrEditConflict`) is returned. A zero `expected` is rejected as `invalid` (the CLI passes the value it just read). |
+| `CancelSync(ctx, actionID) error` | Cancels the context of the action's running job, if any (no-op, no error, when idle). A pending automatic trigger of that action is dropped; requests queued by other callers still run. A cancelled job does not count as a failure, does not start backoff and does not notify; the action returns to its previous non-error state; the result outcome is `cancelled`. The engine's existing cancellation paths (lock release, baseline only after a full apply) are relied on and covered by a test. |
+| `UpdateRules(ctx, req UpdateRulesRequest)` | `UpdateRulesRequest{Rules, ExpectedUpdatedAt}`; `ExpectedUpdatedAt` is the `Action.UpdatedAt` the editor loaded. The check runs inside `engine.UpdateSharedAction`, under the action lock, against the bucket copy. If the bucket copy's `UpdatedAt` differs, nothing is written and the new code `conflict-edit` (HTTP 409, sentinel `engine.ErrEditConflict`) is returned. A zero `ExpectedUpdatedAt` is rejected as `invalid` (the CLI passes the value it just read). |
 | `ActionStatus.ProfileID` / `Action.ProfileID` | `ActionStatus.ProfileID` is always filled by the agent (today it can be lost over IPC because `model.Action.ProfileID` is `json:"-"`). The GUI uses only `ActionStatus.ProfileID`. |
 | `protected-path` code | `engine.ErrProtectedPath` gets its own code (HTTP 400) instead of `invalid`. |
 | Dev secrets file | Env `S3_ANYSYNC_SECRETS=file` makes the agent and CLI store secrets in `<data dir>/secrets.json` (mode 0600, written atomically) instead of the OS keychain. Any other non-empty value is an error at start. For development and tests only; README marks it insecure. Implemented as a `secrets.Store` in `internal/secrets`. |
@@ -48,7 +48,7 @@ IPC routes: `PUT /profiles/{id}`, `DELETE /profiles/{id}`, `POST /actions/{id}/c
 - `src/api.ts`: thin typed wrapper over the bindings that parses the `{"code","message"}` error into an `AgentError` class.
 - `src/store.ts`: one reducer-based store (React context + `useReducer`): `connection`, `status`, `actions: Record<id, ActionStatus>`, `profiles`, `activity` (ring buffer, last 500 entries). Event handling: `action.state` replaces `actions[id]`; `action.result` appends to activity and refetches `Action(id)`; `actions.changed` refetches `Actions()`; reconnect refetches everything.
 - `src/errors.ts`: code → user message map (section 5).
-- `src/schedule.ts`: preset compiler and next-runs preview for cron strings, matching the Go `internal/schedule` package. Shared vectors in `internal/schedule/testdata/vectors.json` (input, reference time, expected next 3 runs or expected error) are run by both a Go test and a Vitest test.
+- `src/lib/schedule.ts` maps presets to `model.Schedule`; the next-runs preview is the bound Go method `PreviewSchedule` (uses `internal/schedule`).
 - Routing: in-app state router (no URL routing library): `actions`, `action/:id/:tab`, `conflicts/:id`, `profiles`, `activity`, `settings`.
 - Themes: `system` (default), `light`, `dark`, stored in `localStorage`; Tailwind `dark:` classes.
 
@@ -96,8 +96,7 @@ Unsaved forms (Rules, Profile) ask "Discard changes?" before navigating away.
 ## 6. Testing
 
 - Go: unit and `httptest` tests for every section 2 addition (incl. cancel during apply leaves the baseline and lock consistent, cancel is not a failure, `conflict-edit`, `in-use`, 401 retry). `cmd/gui` tests with a fake `api.Service` and fake launcher: binding pass-through and error encoding, auto-start, timeout, reconnect, event forwarding.
-- Shared schedule vectors run in Go and Vitest.
-- Vitest: error mapping, store reducer, schedule preview, profile form (blank secret keeps), rules form (`conflict-edit` flow incl. re-apply), conflict resolver (Apply gating, bulk-delete warning), delete review (fresh list).
+- Vitest: error mapping, store reducer, schedule preset mapper, profile form (blank secret keeps), rules form (`conflict-edit` flow incl. re-apply), conflict resolver (Apply gating, bulk-delete warning), delete review (fresh list).
 - Hand-check: `wails dev` with `S3_ANYSYNC_DATA_DIR` set to a temp folder, `S3_ANYSYNC_SECRETS=file`, and the `s3-anysync-minio` container; every screen in section 4 walked once in the browser pane. The real data folder, Keychain and login items are not touched.
 
 ## 7. Task order
@@ -107,7 +106,7 @@ Unsaved forms (Rules, Profile) ask "Discard changes?" before navigating away.
 3. Frontend shell: layout, theme, store, events, error mapping, API wrapper.
 4. Profiles screen.
 5. Actions list, New action wizard, Join existing.
-6. Action detail: Overview, Rules (with schedule vectors), Items, Snapshots, History.
+6. Action detail: Overview, Rules (with schedule preview), Items, Snapshots, History.
 7. Conflicts resolver and delete review.
 8. Activity and Settings.
 9. README (GUI build/run) and the hand-check.

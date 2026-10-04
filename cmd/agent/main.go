@@ -33,7 +33,11 @@ func connectDefault(ctx context.Context) (api.Service, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return connectTo(ctx, dir, secrets.NewKeyring(), defaultAutostart(), nil)
+	sec, err := secrets.FromEnv(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return connectTo(ctx, dir, sec, defaultAutostart(), nil)
 }
 
 // defaultAutostart registers this executable with "run"; nil if unsupported.
