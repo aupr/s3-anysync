@@ -2,7 +2,10 @@ package tray
 
 import (
 	"bytes"
+	"encoding/binary"
+	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 
 	"github.com/niceit/s3-anysync/internal/api"
@@ -68,10 +71,68 @@ func TestTooltip(t *testing.T) {
 }
 
 func TestIconsArePNG(t *testing.T) {
+	seen := map[color.RGBA]iconKind{}
 	for _, k := range []iconKind{iconIdle, iconSyncing, iconAttention, iconError} {
 		img, err := png.Decode(bytes.NewReader(iconPNG(k)))
-		if err != nil || img.Bounds().Dx() != 32 {
+		if err != nil {
 			t.Fatalf("icon %v: %v", k, err)
 		}
+		if b := img.Bounds(); b.Dx() != 32 || b.Dy() != 32 {
+			t.Fatalf("icon %v: size %v", k, b)
+		}
+		r, g, bl, a := img.At(16, 16).RGBA()
+		c := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(bl >> 8), uint8(a >> 8)}
+		if c.A == 0 {
+			t.Errorf("icon %v: transparent centre", k)
+		}
+		if prev, dup := seen[c]; dup {
+			t.Errorf("icons %v and %v share centre colour %v", prev, k, c)
+		}
+		seen[c] = k
+	}
+}
+
+func TestIconICO(t *testing.T) {
+	p := iconPNG(iconIdle)
+	ico := iconICO(p, 32)
+	want := []byte{0, 0, 1, 0, 1, 0, 32, 32, 0, 0, 1, 0, 32, 0}
+	if !bytes.Equal(ico[:14], want) {
+		t.Fatalf("header % x, want % x", ico[:14], want)
+	}
+	if n := binary.LittleEndian.Uint32(ico[14:18]); int(n) != len(p) {
+		t.Errorf("bytesInRes %d, want %d", n, len(p))
+	}
+	if off := binary.LittleEndian.Uint32(ico[18:22]); off != 22 {
+		t.Errorf("offset %d, want 22", off)
+	}
+	if !bytes.Equal(ico[22:], p) {
+		t.Error("payload differs from PNG")
+	}
+	if _, err := png.Decode(bytes.NewReader(ico[22:])); err != nil {
+		t.Errorf("decode from offset: %v", err)
+	}
+}
+
+func TestIconBytesFor(t *testing.T) {
+	for _, k := range []iconKind{iconIdle, iconSyncing, iconAttention, iconError} {
+		if b := iconBytesFor("windows", k); !bytes.HasPrefix(b, []byte{0, 0, 1, 0, 1, 0}) {
+			t.Errorf("windows icon %v lacks ICO header", k)
+		}
+		if b := iconBytesFor("darwin", k); !bytes.HasPrefix(b, []byte("\x89PNG\r\n\x1a\n")) {
+			t.Errorf("darwin icon %v lacks PNG signature", k)
+		}
+	}
+}
+
+func TestActionTitleStripsControlChars(t *testing.T) {
+	s := as(api.StateError, func(s *api.ActionStatus) { s.LastError = "line1\nline2\r\x00\ttab" })
+	got := actionTitle(s)
+	for _, r := range got {
+		if r < 0x20 || r == 0x7f {
+			t.Fatalf("control char %q in %q", r, got)
+		}
+	}
+	if !strings.Contains(got, "line1 line2") {
+		t.Errorf("got %q", got)
 	}
 }

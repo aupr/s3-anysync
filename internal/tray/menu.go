@@ -5,6 +5,8 @@ package tray
 import (
 	"fmt"
 	"log/slog"
+	"strings"
+	"unicode"
 
 	"github.com/niceit/s3-anysync/internal/api"
 )
@@ -58,7 +60,7 @@ func actionTitle(a api.ActionStatus) string {
 	case a.State == api.StatePausedUser:
 		s = "paused"
 	case a.State == api.StateError:
-		s = "error (" + a.LastError + ")"
+		s = "error (" + cleanLine(a.LastError) + ")"
 	default:
 		s = "idle"
 	}
@@ -85,4 +87,15 @@ func tooltip(st api.Status) string {
 		return fmt.Sprintf("s3-anysync: %d action(s), all fine", len(st.Actions))
 	}
 	return fmt.Sprintf("s3-anysync: %d action(s), %d need attention", len(st.Actions), attention)
+}
+
+// cleanLine replaces newlines and other control characters with spaces so
+// the text fits a single menu line.
+func cleanLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
 }

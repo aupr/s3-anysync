@@ -2,9 +2,11 @@ package tray
 
 import (
 	"bytes"
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/png"
+	"runtime"
 )
 
 var iconColors = map[iconKind]color.RGBA{
@@ -16,7 +18,7 @@ var iconColors = map[iconKind]color.RGBA{
 
 // iconPNG draws a 32×32 filled circle in the state's colour.
 func iconPNG(k iconKind) []byte {
-	const size = 32
+	const size = iconSize
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	c := iconColors[k]
 	r := float64(size)/2 - 2
@@ -32,3 +34,34 @@ func iconPNG(k iconKind) []byte {
 	png.Encode(&b, img)
 	return b.Bytes()
 }
+
+const iconSize = 32
+
+// iconICO wraps a PNG in a single-image ICO container (Windows' systray
+// loads icons with LoadImage, which needs ICO, not PNG).
+func iconICO(png []byte, size int) []byte {
+	dim := byte(size) // 0 means 256
+	if size >= 256 {
+		dim = 0
+	}
+	b := make([]byte, 0, 22+len(png))
+	b = append(b, 0, 0, 1, 0, 1, 0)             // ICONDIR: reserved, type=icon, count=1
+	b = append(b, dim, dim, 0, 0)               // width, height, colorCount, reserved
+	b = binary.LittleEndian.AppendUint16(b, 1)  // planes
+	b = binary.LittleEndian.AppendUint16(b, 32) // bitCount
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(png)))
+	b = binary.LittleEndian.AppendUint32(b, 22) // image offset
+	return append(b, png...)
+}
+
+// iconBytesFor returns the icon in the format the OS tray expects.
+func iconBytesFor(goos string, k iconKind) []byte {
+	p := iconPNG(k)
+	if goos == "windows" {
+		return iconICO(p, iconSize)
+	}
+	return p
+}
+
+// iconBytes returns the icon for the running OS.
+func iconBytes(k iconKind) []byte { return iconBytesFor(runtime.GOOS, k) }

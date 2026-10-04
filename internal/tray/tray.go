@@ -17,7 +17,8 @@ import (
 func Available() bool { return true }
 
 // Run shows the tray and blocks until Quit is picked or ctx ends. On macOS
-// it must be called from the main goroutine (the process's main thread).
+// and Windows it must be called from a goroutine locked to the main OS
+// thread (cmd/agent calls runtime.LockOSThread in init).
 func Run(ctx context.Context, svc api.Service, o Options) error {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
@@ -45,7 +46,7 @@ type tray struct {
 }
 
 func (t *tray) ready(ctx context.Context) {
-	systray.SetIcon(iconPNG(iconIdle))
+	systray.SetIcon(iconBytes(iconIdle))
 	systray.SetTooltip("s3-anysync")
 	t.status = systray.AddMenuItem("s3-anysync", "")
 	t.status.Disable()
@@ -64,7 +65,9 @@ func (t *tray) ready(ctx context.Context) {
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Quit s3-anysync", "Stop the background agent")
 
-	t.refresh(ctx)
+	if !t.refresh(ctx) {
+		time.AfterFunc(2*time.Second, func() { t.refresh(ctx) })
+	}
 	go t.watch(ctx)
 
 	var openC <-chan struct{}
@@ -77,23 +80,41 @@ func (t *tray) ready(ctx context.Context) {
 			case <-ctx.Done():
 				systray.Quit()
 				return
-			case <-quit.ClickedCh:
+			case _, ok := <-quit.ClickedCh:
+				if !ok {
+					return
+				}
 				if t.o.OnQuit != nil {
 					t.o.OnQuit()
 				}
 				systray.Quit()
 				return
-			case <-openC:
+			case _, ok := <-openC:
+				if !ok {
+					return
+				}
 				if err := t.o.OpenGUI(); err != nil {
 					t.o.Log.Warn("open window", "err", err)
 				}
-			case <-syncAll.ClickedCh:
+			case _, ok := <-syncAll.ClickedCh:
+				if !ok {
+					return
+				}
 				go t.forAll(ctx, func(id string) error { _, err := t.svc.Sync(ctx, id); return err })
-			case <-snapAll.ClickedCh:
+			case _, ok := <-snapAll.ClickedCh:
+				if !ok {
+					return
+				}
 				go t.forAll(ctx, func(id string) error { _, err := t.svc.Snapshot(ctx, id); return err })
-			case <-pauseAll.ClickedCh:
+			case _, ok := <-pauseAll.ClickedCh:
+				if !ok {
+					return
+				}
 				go t.forAll(ctx, func(id string) error { return t.svc.Pause(ctx, id) })
-			case <-resumeAll.ClickedCh:
+			case _, ok := <-resumeAll.ClickedCh:
+				if !ok {
+					return
+				}
 				go t.forAll(ctx, func(id string) error { return t.svc.Resume(ctx, id) })
 			}
 		}
@@ -127,6 +148,7 @@ func (t *tray) watch(ctx context.Context) {
 			return
 		case _, ok := <-ch:
 			if !ok {
+				t.o.Log.Warn("tray events channel closed; menu will no longer update")
 				return
 			}
 			if pending == nil {
@@ -139,16 +161,17 @@ func (t *tray) watch(ctx context.Context) {
 	}
 }
 
-func (t *tray) refresh(ctx context.Context) {
+// refresh reports whether the status could be fetched.
+func (t *tray) refresh(ctx context.Context) bool {
 	st, err := t.svc.Status(ctx)
 	if err != nil {
 		t.o.Log.Warn("tray status", "err", err)
-		return
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if k := iconFor(st); !t.iconSet || k != t.icon {
-		systray.SetIcon(iconPNG(k))
+		systray.SetIcon(iconBytes(k))
 		t.icon, t.iconSet = k, true
 	}
 	tip := tooltip(st)
@@ -186,6 +209,7 @@ func (t *tray) refresh(ctx context.Context) {
 	} else {
 		t.parent.Enable()
 	}
+	return true
 }
 
 func (t *tray) addAction(ctx context.Context, id string) *actionMenu {
@@ -200,17 +224,18 @@ func (t *tray) addAction(ctx context.Context, id string) *actionMenu {
 		}
 	}
 	go func() {
-		for {
+		merged := make(chan struct{})
+		go func() {
 			select {
 			case <-ctx.Done():
-				return
 			case <-m.stop:
-				return
-			case <-m.sync.ClickedCh:
-				go run("sync", func() error { _, err := t.svc.Sync(ctx, id); return err })
-			case <-m.snap.ClickedCh:
-				go run("snapshot", func() error { _, err := t.svc.Snapshot(ctx, id); return err })
-			case <-m.pause.ClickedCh:
+			}
+			close(merged)
+		}()
+		serveClicks(merged, m.sync.ClickedCh, m.snap.ClickedCh, m.pause.ClickedCh, clickHandlers{
+			Sync:     func() { go run("sync", func() error { _, err := t.svc.Sync(ctx, id); return err }) },
+			Snapshot: func() { go run("snapshot", func() error { _, err := t.svc.Snapshot(ctx, id); return err }) },
+			Pause: func() {
 				t.mu.Lock()
 				paused := m.paused
 				t.mu.Unlock()
@@ -219,8 +244,8 @@ func (t *tray) addAction(ctx context.Context, id string) *actionMenu {
 				} else {
 					go run("pause", func() error { return t.svc.Pause(ctx, id) })
 				}
-			}
-		}
+			},
+		})
 	}()
 	return m
 }
