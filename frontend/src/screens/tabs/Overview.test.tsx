@@ -59,8 +59,9 @@ test.each(['paused', 'paused-conflict'] as const)('the conflicts banner shows wi
 test.each(['paused', 'paused-deletes'] as const)('the deletes banner shows with state %s and leads to the deletions', async (state) => {
   await open(st({ state, pendingDeletes: 4 }))
   expect(screen.getByText(/4 deletion\(s\) are held back/)).toBeInTheDocument()
+  bindings.PendingDeletes.mockResolvedValue({ paths: ['x'], approved: false, detectedAt: '2026-10-04T01:02:03Z' })
   fireEvent.click(screen.getByRole('button', { name: 'Review deletions' }))
-  expect(await screen.findByText('This screen is added in a later task.')).toBeInTheDocument()
+  expect(await screen.findByText(/^Deletions held back in /)).toBeInTheDocument()
 })
 
 test('no conflicts or deletes banner without any', async () => {
