@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 export type Theme = 'system' | 'light' | 'dark'
 const KEY = 's3as.theme'
@@ -23,7 +23,10 @@ function saveTheme(t: Theme) {
 
 export const isDark = (t: Theme, prefersDark: boolean) => t === 'dark' || (t === 'system' && prefersDark)
 
-export function useTheme(): [Theme, (t: Theme) => void] {
+type ThemeValue = [Theme, (t: Theme) => void]
+const Ctx = createContext<ThemeValue | null>(null)
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(loadTheme)
   useEffect(() => {
     const mq = window.matchMedia?.('(prefers-color-scheme: dark)')
@@ -33,5 +36,12 @@ export function useTheme(): [Theme, (t: Theme) => void] {
     mq?.addEventListener?.('change', apply)
     return () => mq?.removeEventListener?.('change', apply)
   }, [theme])
-  return [theme, setTheme]
+  const value = useMemo<ThemeValue>(() => [theme, setTheme], [theme])
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+}
+
+export function useTheme(): ThemeValue {
+  const v = useContext(Ctx)
+  if (!v) throw new Error('useTheme outside ThemeProvider')
+  return v
 }

@@ -1,7 +1,7 @@
 import { toAgentError } from './api'
 
 const messages: Record<string, string> = {
-  busy: 'The agent is busy with this action. Try again in a moment.',
+  busy: 'Another s3-anysync process is using the data folder. Try again in a moment.',
   locked: 'Another machine is syncing this action. Try again in a minute.',
   'not-found': 'It no longer exists; it may have been removed elsewhere.',
   'conflict-pending': 'This action has conflicts. Resolve them first.',

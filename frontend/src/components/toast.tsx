@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { describeError } from '../lib/errors'
 
 interface Toast { id: number; message: string; details?: string; tone: 'info' | 'error' }
@@ -13,11 +13,27 @@ let next = 1
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [open, setOpen] = useState<number | null>(null)
-  const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), [])
+  const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>())
+  const clearTimer = useCallback((id: number) => {
+    const h = timers.current.get(id)
+    if (h !== undefined) clearTimeout(h)
+    timers.current.delete(id)
+  }, [])
+  const dismiss = useCallback((id: number) => {
+    clearTimer(id)
+    setToasts((t) => t.filter((x) => x.id !== id))
+  }, [clearTimer])
+  useEffect(() => {
+    const m = timers.current
+    return () => {
+      m.forEach((h) => clearTimeout(h))
+      m.clear()
+    }
+  }, [])
   const show = useCallback<ToastValue['show']>((message, opts) => {
     const t: Toast = { id: next++, message, details: opts?.details, tone: opts?.tone ?? 'info' }
     setToasts((all) => [...all, t])
-    setTimeout(() => dismiss(t.id), t.details ? 12000 : 6000)
+    timers.current.set(t.id, setTimeout(() => dismiss(t.id), t.details ? 12000 : 6000))
   }, [dismiss])
   const error = useCallback((e: unknown) => {
     const d = describeError(e)
@@ -36,7 +52,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <button type="button" aria-label="Dismiss" onClick={() => dismiss(t.id)}>×</button>
             </div>
             {t.details && (
-              <button type="button" className="mt-1 text-xs underline" onClick={() => setOpen(open === t.id ? null : t.id)}>Details</button>
+              <button type="button" className="mt-1 text-xs underline" onClick={() => {
+                if (open !== t.id) clearTimer(t.id)
+                setOpen(open === t.id ? null : t.id)
+              }}>Details</button>
             )}
             {t.details && open === t.id && <pre className="mt-1 whitespace-pre-wrap break-all text-xs">{t.details}</pre>}
           </div>

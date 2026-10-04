@@ -27,7 +27,7 @@ export function toAgentError(e: unknown): AgentError {
 }
 
 function call<T>(name: string, ...args: unknown[]): Promise<T> {
-  return (bindings[name](...args) as Promise<T>).catch((e: unknown) => {
+  return Promise.resolve().then(() => bindings[name](...args) as Promise<T>).catch((e: unknown) => {
     throw toAgentError(e)
   })
 }

@@ -2,6 +2,7 @@ import { Shell } from './components/Shell'
 import { ToastProvider } from './components/toast'
 import { RouterProvider, useRouter } from './lib/router'
 import { StoreProvider, useStore } from './lib/store'
+import { ThemeProvider } from './lib/theme'
 import { AgentDown } from './screens/AgentDown'
 import { Screen } from './screens'
 
@@ -19,12 +20,14 @@ function Main() {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <StoreProvider>
-        <RouterProvider>
-          <Main />
-        </RouterProvider>
-      </StoreProvider>
-    </ToastProvider>
+    <ThemeProvider>
+      <ToastProvider>
+        <StoreProvider>
+          <RouterProvider>
+            <Main />
+          </RouterProvider>
+        </StoreProvider>
+      </ToastProvider>
+    </ThemeProvider>
   )
 }

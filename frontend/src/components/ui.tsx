@@ -1,4 +1,4 @@
-import { useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react'
+import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react'
 import type { Tone } from '../lib/format'
 
 type Variant = 'primary' | 'secondary' | 'danger' | 'ghost'
@@ -54,15 +54,26 @@ export function Checkbox({ label, checked, onChange, disabled }: { label: ReactN
   )
 }
 
+// Open modals, topmost last; only the topmost one reacts to Escape.
+const modalStack: (() => void)[] = []
+
 export function Modal({ title, children, footer, onClose, wide }: { title: string; children: ReactNode; footer?: ReactNode; onClose: () => void; wide?: boolean }) {
+  const close = useRef(onClose)
+  close.current = onClose
   useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    const handler = () => close.current()
+    modalStack.push(handler)
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && modalStack[modalStack.length - 1] === handler && handler()
     window.addEventListener('keydown', k)
-    return () => window.removeEventListener('keydown', k)
-  }, [onClose])
+    return () => {
+      window.removeEventListener('keydown', k)
+      const i = modalStack.indexOf(handler)
+      if (i >= 0) modalStack.splice(i, 1)
+    }
+  }, [])
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-6">
-      <div role="dialog" aria-label={title} className={`flex max-h-full w-full flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-900 ${wide ? 'max-w-4xl' : 'max-w-lg'}`}>
+      <div role="dialog" aria-modal="true" aria-label={title} className={`flex max-h-full w-full flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-900 ${wide ? 'max-w-4xl' : 'max-w-lg'}`}>
         <h2 className="border-b border-zinc-200 px-4 py-3 text-base font-semibold dark:border-zinc-700">{title}</h2>
         <div className="overflow-auto px-4 py-3">{children}</div>
         {footer && <div className="flex justify-end gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-700">{footer}</div>}

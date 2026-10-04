@@ -15,7 +15,7 @@ function Page() {
   )
 }
 
-test('navigation asks before discarding unsaved changes', () => {
+test('navigates directly when nothing is unsaved', () => {
   render(<RouterProvider><Page /></RouterProvider>)
   fireEvent.click(screen.getByText('go'))
   expect(screen.getByText('at:profiles')).toBeInTheDocument()
@@ -31,4 +31,22 @@ test('cancel keeps the page, discard leaves it', () => {
   fireEvent.click(screen.getByText('go'))
   fireEvent.click(screen.getByText('Discard'))
   expect(screen.getByText('at:profiles')).toBeInTheDocument()
+})
+
+test('navigating to the identical route does nothing and does not prompt', () => {
+  function Same() {
+    const { navigate } = useRouter()
+    const [dirty, setDirty] = useState(false)
+    useDirtyGuard(dirty)
+    return (
+      <div>
+        <button onClick={() => setDirty(true)}>edit</button>
+        <button onClick={() => navigate({ name: 'actions' })}>same</button>
+      </div>
+    )
+  }
+  render(<RouterProvider><Same /></RouterProvider>)
+  fireEvent.click(screen.getByText('edit'))
+  fireEvent.click(screen.getByText('same'))
+  expect(screen.queryByText('Discard changes?')).toBeNull()
 })

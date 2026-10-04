@@ -27,7 +27,10 @@ export function RouterProvider({ initial = { name: 'actions' }, children }: { in
     if (d) dirty.current.add(key)
     else dirty.current.delete(key)
   }, [])
+  const current = useRef(route)
+  current.current = route
   const navigate = useCallback((r: Route) => {
+    if (JSON.stringify(r) === JSON.stringify(current.current)) return
     if (dirty.current.size > 0) setPending(r)
     else setRoute(r)
   }, [])

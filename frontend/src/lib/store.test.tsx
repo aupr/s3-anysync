@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 vi.mock('./bridge', () => import('../test/mockBridge'))
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { bindings, emit } from '../test/mockBridge'
 import { ACTIVITY_LIMIT, initialState, reducer, StoreProvider, useStore } from './store'
 import type { ActionStatus } from './types'
@@ -38,7 +38,7 @@ test('actions list replaces the map (left actions disappear)', () => {
 
 function Probe() {
   const { state } = useStore()
-  return <div>{state.connection.connected ? `on:${Object.keys(state.actions).join(',')}` : 'off'}</div>
+  return <div><div>{state.connection.connected ? `on:${Object.keys(state.actions).join(',')}` : 'off'}</div><span>{state.actions.a?.lastOutcome ? `outcome:${state.actions.a.lastOutcome}` : ''}</span></div>
 }
 
 test('provider loads everything on connect and refetches on events', async () => {
@@ -52,7 +52,47 @@ test('provider loads everything on connect and refetches on events', async () =>
   bindings.Actions.mockResolvedValue([st('a', 'idle'), st('b', 'idle')])
   act(() => emit('agent:event', { type: 'actions.changed', actionId: 'b', time: 't' }))
   expect(await screen.findByText('on:a,b')).toBeInTheDocument()
-  bindings.Action.mockResolvedValue({ ...st('a', 'idle'), lastOutcome: 'ok' })
+  bindings.Action.mockClear()
   act(() => emit('agent:event', { type: 'action.result', actionId: 'a', result: null, time: 't' }))
-  await waitFor(() => expect(bindings.Action).toHaveBeenCalledWith('a'))
+  act(() => emit('agent:event', { type: 'action.state', actionId: 'a', status: { ...st('a', 'idle'), lastOutcome: 'ok' }, time: 't' }))
+  expect(await screen.findByText('outcome:ok')).toBeInTheDocument()
+  expect(bindings.Action).not.toHaveBeenCalled()
+})
+
+function Probe2() {
+  const { state } = useStore()
+  return <div>{`${state.connection.connected ? 'on' : 'off'}|${state.actions.a?.running ? 'running' : 'idle'}|${state.actions.a?.lastOutcome ?? ''}|${state.actions.b ? 'b' : ''}`}</div>
+}
+
+test('a state event during an Actions() refetch survives the stale response', async () => {
+  bindings.ConnectionState.mockResolvedValue({ connected: true })
+  bindings.Status.mockResolvedValue({ machineId: 'm', machineName: 'mac', version: 'v', agent: true, actions: [st('a', 'idle')] })
+  bindings.Profiles.mockResolvedValue([])
+  render(<StoreProvider><Probe2 /></StoreProvider>)
+  expect(await screen.findByText('on|idle||')).toBeInTheDocument()
+  let resolve!: (l: ActionStatus[]) => void
+  bindings.Actions.mockReturnValue(new Promise((r) => { resolve = r }))
+  act(() => emit('agent:event', { type: 'actions.changed', actionId: 'b', time: 't' }))
+  act(() => emit('agent:event', { type: 'action.state', actionId: 'a', status: { ...st('a', 'idle'), running: true }, time: 't' }))
+  expect(await screen.findByText('on|running||')).toBeInTheDocument()
+  await act(async () => { resolve([st('a', 'idle'), st('b', 'idle')]) })
+  expect(await screen.findByText('on|running||b')).toBeInTheDocument()
+})
+
+test('a late ConnectionState result does not override an agent:connection event', async () => {
+  let resolve!: (c: unknown) => void
+  bindings.ConnectionState.mockReturnValue(new Promise((r) => { resolve = r }))
+  bindings.Status.mockResolvedValue({ machineId: 'm', machineName: 'mac', version: 'v', agent: true, actions: [] })
+  bindings.Profiles.mockResolvedValue([])
+  render(<StoreProvider><Probe2 /></StoreProvider>)
+  act(() => emit('agent:connection', { connected: true }))
+  expect(await screen.findByText(/^on\|/)).toBeInTheDocument()
+  await act(async () => { resolve({ connected: false, reason: 'stale' }) })
+  expect(screen.getByText(/^on\|/)).toBeInTheDocument()
+})
+
+test('the status reducer keeps listed actions', () => {
+  let s = reducer(initialState, { type: 'actions', list: [{ ...st('a', 'idle'), running: true }] })
+  s = reducer(s, { type: 'status', status: { actions: [st('a', 'idle')] } as never, keep: ['a'] })
+  expect(s.actions.a.running).toBe(true)
 })

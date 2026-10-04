@@ -23,3 +23,9 @@ test('null lists become empty arrays', async () => {
   bindings.Profiles.mockResolvedValue(null)
   expect(await api.profiles()).toEqual([])
 })
+
+test('a binding that throws synchronously rejects with an AgentError', async () => {
+  bindings.Pause.mockImplementation(() => { throw new Error('boom') })
+  const p = api.pause('a')
+  await expect(p).rejects.toMatchObject({ name: 'AgentError', code: 'internal', message: 'boom' })
+})

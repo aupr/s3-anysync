@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type Dispatch, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type Dispatch, type ReactNode } from 'react'
 import { api } from './api'
 import { onEvent } from './bridge'
 import { stateLabels, summarizeResult } from './format'
@@ -26,8 +26,8 @@ export interface State {
 
 export type Msg =
   | { type: 'connection'; conn: ConnState }
-  | { type: 'status'; status: Status }
-  | { type: 'actions'; list: ActionStatus[] }
+  | { type: 'status'; status: Status; keep?: string[] }
+  | { type: 'actions'; list: ActionStatus[]; keep?: string[] }
   | { type: 'action'; status: ActionStatus }
   | { type: 'profiles'; list: Profile[] }
   | { type: 'event'; event: AgentEvent }
@@ -41,7 +41,13 @@ export const initialState: State = {
   seq: 0,
 }
 
-const byId = (list: ActionStatus[]) => Object.fromEntries(list.map((a) => [a.action.id, a]))
+// byId indexes a fetched list; ids in keep retain their current (newer,
+// event-sourced) entry from cur.
+function byId(list: ActionStatus[], cur: Record<string, ActionStatus>, keep?: string[]) {
+  const out = Object.fromEntries(list.map((a) => [a.action.id, a]))
+  for (const id of keep ?? []) if (id in out && cur[id]) out[id] = cur[id]
+  return out
+}
 
 function log(s: State, e: Omit<ActivityEntry, 'id'>): State {
   const entry = { ...e, id: s.seq + 1 }
@@ -53,9 +59,9 @@ export function reducer(s: State, m: Msg): State {
     case 'connection':
       return { ...s, connection: m.conn }
     case 'status':
-      return { ...s, status: m.status, actions: byId(m.status.actions ?? []) }
+      return { ...s, status: m.status, actions: byId(m.status.actions ?? [], s.actions, m.keep) }
     case 'actions':
-      return { ...s, actions: byId(m.list) }
+      return { ...s, actions: byId(m.list, s.actions, m.keep) }
     case 'action':
       return { ...s, actions: { ...s.actions, [m.status.action.id]: m.status } }
     case 'profiles':
@@ -94,31 +100,44 @@ const Ctx = createContext<StoreValue | null>(null)
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState)
+  // Per action: how many action.state events arrived. A fetched snapshot whose
+  // request overlapped an event for that action is older than the event.
+  const counters = useRef(new Map<string, number>())
+  const changed = (before: Map<string, number>, ids: string[]) =>
+    ids.filter((id) => (counters.current.get(id) ?? 0) !== (before.get(id) ?? 0))
   const reloadProfiles = useCallback(async () => {
     dispatch({ type: 'profiles', list: await api.profiles() })
   }, [])
   const refresh = useCallback(async () => {
+    const before = new Map(counters.current)
     const [status, profiles] = await Promise.all([api.status(), api.profiles()])
-    dispatch({ type: 'status', status })
+    dispatch({ type: 'status', status, keep: changed(before, (status.actions ?? []).map((a) => a.action.id)) })
     dispatch({ type: 'profiles', list: profiles })
   }, [])
   useEffect(() => {
     const quiet = () => {} // a failed background refresh shows up as a connection change
+    let sawConnEvent = false
     const onConn = (conn: ConnState) => {
       dispatch({ type: 'connection', conn })
       if (conn.connected) refresh().catch(quiet)
     }
-    const offConn = onEvent('agent:connection', onConn)
+    const offConn = onEvent('agent:connection', (conn: ConnState) => {
+      sawConnEvent = true
+      onConn(conn)
+    })
     const offEv = onEvent('agent:event', (ev: AgentEvent) => {
-      dispatch({ type: 'event', event: ev })
-      if (ev.type === 'action.result' && ev.actionId) {
-        api.action(ev.actionId).then((status) => dispatch({ type: 'action', status })).catch(quiet)
+      if (ev.type === 'action.state' && ev.actionId) {
+        counters.current.set(ev.actionId, (counters.current.get(ev.actionId) ?? 0) + 1)
       }
+      dispatch({ type: 'event', event: ev })
+      // action.result is always followed by a full action.state event, so it needs no refetch.
       if (ev.type === 'actions.changed') {
-        api.actions().then((list) => dispatch({ type: 'actions', list })).catch(quiet)
+        const before = new Map(counters.current)
+        api.actions().then((list) => dispatch({ type: 'actions', list, keep: changed(before, list.map((a) => a.action.id)) })).catch(quiet)
       }
     })
-    api.connectionState().then(onConn).catch(quiet)
+    // A connection event that arrived first is newer than this initial answer.
+    api.connectionState().then((conn) => { if (!sawConnEvent) onConn(conn) }).catch(quiet)
     return () => {
       offConn()
       offEv()
