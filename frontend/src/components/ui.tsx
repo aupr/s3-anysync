@@ -86,7 +86,7 @@ export function ConfirmDialog(p: { title: string; message: ReactNode; confirmLab
   return (
     <Modal title={p.title} onClose={p.onCancel} footer={
       <>
-        <Button onClick={p.onCancel}>Cancel</Button>
+        <Button disabled={p.busy} onClick={p.onCancel}>Cancel</Button>
         <Button variant={p.danger ? 'danger' : 'primary'} disabled={p.busy} onClick={p.onConfirm}>{p.confirmLabel}</Button>
       </>
     }>
