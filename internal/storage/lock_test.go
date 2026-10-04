@@ -685,3 +685,46 @@ func TestLockTimingIsClamped(t *testing.T) {
 		t.Fatal("no renewal happened with RenewEvery >= TTL")
 	}
 }
+
+// hangingGets blocks every Get until its context ends, once hang is set.
+type hangingGets struct {
+	*Memory
+	mu   sync.Mutex
+	hang bool
+}
+
+func (h *hangingGets) Get(ctx context.Context, key string) ([]byte, Object, error) {
+	h.mu.Lock()
+	hang := h.hang
+	h.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return nil, Object{}, ctx.Err()
+	}
+	return h.Memory.Get(ctx, key)
+}
+
+func TestReleaseAfterLossDoesNotTouchTheStore(t *testing.T) {
+	store := &hangingGets{Memory: NewMemory()}
+	l := &Locker{Store: store, Key: "x/.meta/lock", MachineID: "A", TTL: 300 * time.Millisecond, RenewEvery: 20 * time.Millisecond, Mode: LockConditional}
+	held, release, err := l.Hold(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.hang = true // renewals now hang until the watchdog gives up
+	store.mu.Unlock()
+	select {
+	case <-held.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("lock loss not detected")
+	}
+	if !errors.Is(context.Cause(held), ErrLockLost) {
+		t.Fatalf("cause = %v", context.Cause(held))
+	}
+	start := time.Now()
+	release()
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("release blocked %v on a lost lock", d)
+	}
+}

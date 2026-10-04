@@ -376,6 +376,11 @@ func (l *Locker) Hold(ctx context.Context) (context.Context, func(), error) {
 			close(stop)
 			cancel(nil) // abort any in-flight Renew; cause stays context.Canceled
 			wg.Wait()
+			if errors.Is(context.Cause(held), ErrLockLost) {
+				// The lock is no longer ours: releasing could only block on a
+				// broken store or race the machine that took it over.
+				return
+			}
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer rcancel()
 			if err := l.Release(rctx); err != nil {
