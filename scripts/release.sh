@@ -30,7 +30,7 @@ DIST=$PWD/dist
 STAGE=$DIST/stage
 [[ -f go.mod && -d scripts && $DIST == "$PWD/dist" ]] || die "refusing to clean $DIST"
 # KEEP_STAGE=1 keeps dist/stage (debugging and inspection of the staged executables).
-trap '[[ -n ${KEEP_STAGE:-} ]] || rm -rf "$STAGE"' EXIT
+trap 'rm -f cmd/agent/rsrc_windows_*.syso; [[ -n ${KEEP_STAGE:-} ]] || rm -rf "$STAGE"' EXIT
 shopt -s nullglob
 case $mode in
   all) rm -rf "$DIST" ;;
@@ -96,8 +96,8 @@ build_windows() {
     --icon cmd/gui/build/windows/icon.ico \
     --product-name s3-anysync --product-version "$v4" --file-version "$v4" \
     --file-description "s3-anysync agent and command-line tool" --copyright niceit
-  # rsrc_windows_amd64.syso is only linked into windows/amd64 builds; never keep it.
-  trap 'rm -f cmd/agent/*.syso' RETURN
+  # rsrc_windows_amd64.syso is only linked into windows/amd64 builds; the EXIT trap
+  # removes it even when a build fails.
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
     -ldflags "$LDVER -X main.role=agent -H=windowsgui" -o "$win/s3-anysync-agent.exe" ./cmd/agent
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \

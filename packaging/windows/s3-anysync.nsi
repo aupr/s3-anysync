@@ -4,6 +4,7 @@ Unicode true
 !include "MUI2.nsh"
 !include "Sections.nsh"
 !include "LogicLib.nsh"
+!include "WinMessages.nsh"
 
 !define APP "s3-anysync"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP}"
@@ -37,10 +38,12 @@ VIAddVersionKey "LegalCopyright" "niceit"
 !insertmacro MUI_LANGUAGE "English"
 
 ; Stops a running agent and GUI so their files can be replaced or removed.
+; /F is acceptable: there is no IPC quit, the WAL survives a kill, local writes are
+; temp+rename, and the remote lock expires after 2 minutes.
 !macro StopApp
-  nsExec::Exec 'taskkill /IM s3-anysync-agent.exe /F'
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /IM s3-anysync-agent.exe /F'
   Pop $0
-  nsExec::Exec 'taskkill /IM s3-anysync.exe /F'
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /IM s3-anysync.exe /F'
   Pop $0
   Sleep 500
 !macroend
@@ -52,6 +55,7 @@ Section "${APP} (required)" SecMain
   File "${SRCDIR}\s3-anysync.exe"
   File "${SRCDIR}\s3-anysync-agent.exe"
   File "${SRCDIR}\s3-anysync-cli.exe"
+  File "path.ps1"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\s3-anysync.exe"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${APP}"
@@ -64,12 +68,27 @@ Section "${APP} (required)" SecMain
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
 SectionEnd
 
-; PATH editing goes through PowerShell: NSIS string buffers are limited and
-; could truncate a long PATH.
-Section /o "Add the command-line tool to PATH" SecPath
-  nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d='$INSTDIR'; $$p=[Environment]::GetEnvironmentVariable('Path','User'); $$parts=@(); if ($$p) { $$parts=$$p.Split(';') | Where-Object { $$_ -ne '' } }; if ($$parts -notcontains $$d) { [Environment]::SetEnvironmentVariable('Path', (($$parts + $$d) -join ';'), 'User') }"`
+; PATH editing goes through path.ps1 (raw registry access, keeps REG_EXPAND_SZ).
+; $0 = exit code afterwards; the directory travels in S3ANYSYNC_DIR (no quoting issues).
+; Usage: !insertmacro RunPath "<script>" Add|Remove
+!macro RunPath SCRIPT ACTION
+  System::Call 'Kernel32::SetEnvironmentVariable(t "S3ANYSYNC_DIR", t "$INSTDIR")'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${SCRIPT}" -Action ${ACTION}'
   Pop $0
-  WriteRegDWORD HKCU "${UNINSTKEY}" "AddedToPath" 1
+  ${If} $0 S== "0"
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ${Else}
+    DetailPrint "Could not update PATH (exit code $0)."
+  ${EndIf}
+!macroend
+
+Section /o "Add the command-line tool to PATH" SecPath
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\path.ps1" "path.ps1"
+  !insertmacro RunPath "$PLUGINSDIR\path.ps1" Add
+  ${If} $0 S== "0"
+    WriteRegDWORD HKCU "${UNINSTKEY}" "AddedToPath" 1
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
@@ -77,15 +96,17 @@ Section "Uninstall"
   DeleteRegValue HKCU "${RUNKEY}" "${APP}"
   ReadRegDWORD $1 HKCU "${UNINSTKEY}" "AddedToPath"
   ${If} $1 == 1
-    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d='$INSTDIR'; $$p=[Environment]::GetEnvironmentVariable('Path','User'); if ($$p) { [Environment]::SetEnvironmentVariable('Path', (($$p.Split(';') | Where-Object { $$_ -ne '' -and $$_ -ne $$d }) -join ';'), 'User') }"`
-    Pop $0
+    !insertmacro RunPath "$INSTDIR\path.ps1" Remove
   ${EndIf}
   Delete "$INSTDIR\s3-anysync.exe"
   Delete "$INSTDIR\s3-anysync-agent.exe"
   Delete "$INSTDIR\s3-anysync-cli.exe"
+  Delete "$INSTDIR\path.ps1"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\${APP}.lnk"
   DeleteRegKey HKCU "${UNINSTKEY}"
-  MessageBox MB_OK "s3-anysync was removed. Your settings and sync data were kept in $APPDATA\s3-anysync; delete that folder to remove them too."
+  ; WebView2 user-data folder (go-webview2 default, named after the exe); cache only.
+  RMDir /r "$APPDATA\s3-anysync.exe"
+  MessageBox MB_OK "s3-anysync was removed. Your settings and sync data were kept in $APPDATA\s3-anysync; delete that folder to remove them too." /SD IDOK
 SectionEnd
