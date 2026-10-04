@@ -48,6 +48,11 @@ type WatchOptions struct {
 	// MaxWatchedDirs caps the directories watched by this watcher
 	// (default 20000); further directories are not watched.
 	MaxWatchedDirs int
+	// MaxWatchedFiles caps the files in the watched directories where the
+	// backend keeps one descriptor per file (kqueue: macOS, BSD); it does not
+	// apply elsewhere. Default 5000. Directories that would exceed it are not
+	// watched.
+	MaxWatchedFiles int
 }
 
 // Watcher calls Fire once changes under its roots settle.
@@ -60,9 +65,14 @@ type Watcher struct {
 	dirs    []string        // dir roots (configured and resolved)
 	parents map[string]bool // parent directories of file roots
 	warned  map[string]bool // dedupe of watch-failure warnings
-	stop    chan struct{}
-	done    chan struct{}
-	once    sync.Once
+	// fileCount is the number of files in watched directories (only counted
+	// when fileFDWatches); fileCapped is set once MaxWatchedFiles was hit and
+	// no further directories are added.
+	fileCount  int
+	fileCapped bool
+	stop       chan struct{}
+	done       chan struct{}
+	once       sync.Once
 }
 
 // Watch starts watching.
@@ -75,6 +85,9 @@ func Watch(o WatchOptions) (*Watcher, error) {
 	}
 	if o.MaxWatchedDirs <= 0 {
 		o.MaxWatchedDirs = 20000
+	}
+	if o.MaxWatchedFiles <= 0 {
+		o.MaxWatchedFiles = 5000
 	}
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
@@ -153,16 +166,35 @@ func (w *Watcher) addDirLocked(dir string) bool {
 		return false
 	}
 	if fileFDWatches {
+		if w.fileCapped {
+			return false
+		}
 		// Descriptors of files from a directory that was moved or removed
 		// here stay registered under their paths and would shadow the new
 		// files of the same names; drop them before watching afresh.
+		files := 0
 		if ents, err := os.ReadDir(dir); err == nil {
+			for _, e := range ents {
+				if !e.IsDir() {
+					files++
+				}
+			}
+			if w.fileCount+files > w.o.MaxWatchedFiles {
+				w.fileCapped = true
+				w.warnOnceLocked("filecap", "watching "+dir+" stopped: too many files for the macOS file watcher; changes there are only noticed by schedules, cloud polls and manual syncs", "max", w.o.MaxWatchedFiles, "path", dir)
+				return false
+			}
 			for _, e := range ents {
 				if !e.IsDir() {
 					w.fsw.Remove(filepath.Join(dir, e.Name()))
 				}
 			}
 		}
+		defer func() {
+			if w.watched[dir] {
+				w.fileCount += files
+			}
+		}()
 	}
 	if err := w.fsw.Add(dir); err != nil {
 		w.noteAddFailureLocked(dir, err)
@@ -215,6 +247,9 @@ func (w *Watcher) addTreeLocked(dir string) bool {
 		}
 		if d.IsDir() {
 			w.addDirLocked(p)
+			if w.fileCapped {
+				return filepath.SkipAll
+			}
 		}
 		return nil
 	})

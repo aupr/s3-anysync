@@ -468,3 +468,57 @@ func TestDirRenamedInsideRootKeepsBeingWatched(t *testing.T) {
 	write(t, filepath.Join(dir, "new", "deep", "b.json"), "b")
 	expectFire(t, fired, "new file under the new name")
 }
+
+func TestMaxWatchedFilesCapOnFileDescriptorBackends(t *testing.T) {
+	old := fileFDWatches
+	fileFDWatches = true
+	defer func() { fileFDWatches = old }()
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	for i := 0; i < 10; i++ {
+		d := filepath.Join(dir, "d"+strings.Repeat("x", i))
+		mkdirs(t, d)
+		for j := 0; j < 10; j++ {
+			write(t, filepath.Join(d, "f"+strings.Repeat("y", j)), "x")
+		}
+	}
+	var lb logBuf
+	fired := make(chan struct{}, 16)
+	w, err := Watch(WatchOptions{Roots: []Root{{Path: dir, Dir: true}}, Debounce: 50 * time.Millisecond, Fire: func() { fired <- struct{}{} },
+		Rescan: 30 * time.Millisecond, MaxWatchedFiles: 20, Log: slog.New(slog.NewTextHandler(&lb, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	time.Sleep(200 * time.Millisecond) // several rescans
+	if n := strings.Count(lb.String(), "level=WARN"); n != 1 || !strings.Contains(lb.String(), "too many files") {
+		t.Fatalf("warnings = %d, want 1:\n%s", n, lb.String())
+	}
+	// the root (no files) and two directories of 10 files each
+	if n := w.watchedCount(); n != 3 {
+		t.Fatalf("watched = %d, want 3", n)
+	}
+	write(t, filepath.Join(dir, "dx", "new.json"), "t")
+	expectFire(t, fired, "the watched part still works")
+}
+
+func TestMaxWatchedFilesDoesNotApplyWhereFilesAreNotWatchedIndividually(t *testing.T) {
+	old := fileFDWatches
+	fileFDWatches = false
+	defer func() { fileFDWatches = old }()
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	for i := 0; i < 5; i++ {
+		d := filepath.Join(dir, "d"+strings.Repeat("x", i))
+		mkdirs(t, d)
+		for j := 0; j < 10; j++ {
+			write(t, filepath.Join(d, "f"+strings.Repeat("y", j)), "x")
+		}
+	}
+	w, err := Watch(WatchOptions{Roots: []Root{{Path: dir, Dir: true}}, Debounce: 50 * time.Millisecond, Fire: func() {}, MaxWatchedFiles: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if n := w.watchedCount(); n != 6 {
+		t.Fatalf("watched = %d, want 6", n)
+	}
+}
