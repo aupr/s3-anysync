@@ -128,6 +128,13 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 		return model.SyncResult{}, false, err
 	}
 	remote := filterOwned(manifest.Files, ms)
+	var unsupported []string
+	for p := range manifest.Files {
+		if ms.Unsupported(p) {
+			unsupported = append(unsupported, p)
+		}
+	}
+	sort.Strings(unsupported)
 
 	ops := Plan(PlanInput{
 		Direction: r.action.DirectionFor(r.d.MachineID), PropagateDeletes: r.action.PropagateDeletes,
@@ -162,7 +169,7 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 		if err := r.d.Repo.SaveConflicts(id, conflicts); err != nil {
 			return model.SyncResult{}, false, fmt.Errorf("save conflicts: %w", err)
 		}
-		return model.SyncResult{Outcome: model.OutcomeConflict, Conflicts: conflicts}, false, nil
+		return model.SyncResult{Outcome: model.OutcomeConflict, Conflicts: conflicts, Unsupported: unsupported}, false, nil
 	}
 
 	resolved := map[string]bool{}
@@ -186,7 +193,7 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 		if err := r.d.Repo.SavePendingDeletes(id, &model.PendingDeletes{Paths: del, DetectedAt: now}); err != nil {
 			return model.SyncResult{}, false, fmt.Errorf("save pending deletions: %w", err)
 		}
-		return model.SyncResult{Outcome: model.OutcomeDeletesPending, PendingDeletes: del}, false, nil
+		return model.SyncResult{Outcome: model.OutcomeDeletesPending, PendingDeletes: del, Unsupported: unsupported}, false, nil
 	}
 
 	opCtx := ctx
@@ -237,6 +244,7 @@ func (r *Runner) syncOnce(ctx context.Context, ms Mappings, overrides *resolveRe
 		return res, false, fmt.Errorf("save conflicts: %w", err)
 	}
 	res.Outcome = model.OutcomeOK
+	res.Unsupported = unsupported
 	return res, false, nil
 }
 

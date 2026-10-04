@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/niceit/s3-anysync/internal/model"
@@ -94,21 +95,74 @@ func (ms Mappings) resolve(remotePath string) (Mapping, string, bool) {
 	return Mapping{}, "", false
 }
 
-// LocalPathFor returns where a remote path lives on this machine.
-// It only returns ok=true for paths that are mapped and not excluded by this machine.
-func (ms Mappings) LocalPathFor(remotePath string) (string, bool) {
+// targetOS is the OS whose file-name rules apply to local paths (a test seam).
+var targetOS = runtime.GOOS
+
+var windowsReserved = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+// localNameOK reports whether every segment of rel can be a file name on targetOS.
+func localNameOK(rel string) bool {
+	if targetOS != "windows" {
+		return true
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if strings.ContainsAny(seg, `<>:"|?*`) || strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
+			return false
+		}
+		base := strings.ToUpper(seg)
+		if i := strings.IndexByte(base, '.'); i >= 0 {
+			base = base[:i]
+		}
+		if windowsReserved[base] {
+			return false
+		}
+	}
+	return true
+}
+
+type lookupStatus int
+
+const (
+	notMapped lookupStatus = iota
+	excluded
+	unsupportedName
+	owned
+)
+
+func (ms Mappings) lookup(remotePath string) (string, lookupStatus) {
 	m, rel, ok := ms.resolve(remotePath)
 	if !ok {
-		return "", false
+		return "", notMapped
 	}
-	// Check excludes: resolve guarantees m.matcher is non-nil
 	if m.matcher.MatchPath(rel) {
-		return "", false
+		return "", excluded
+	}
+	if !localNameOK(rel) {
+		return "", unsupportedName
 	}
 	if m.Type == model.ItemFile {
-		return m.LocalPath, true
+		return m.LocalPath, owned
 	}
-	return filepath.Join(m.LocalPath, filepath.FromSlash(rel)), true
+	return filepath.Join(m.LocalPath, filepath.FromSlash(rel)), owned
+}
+
+// LocalPathFor returns where a remote path lives on this machine. ok is true
+// only for paths this machine owns: mapped, not excluded, and a valid name on
+// this OS. It is safe to use as the only gate before reading or writing.
+func (ms Mappings) LocalPathFor(remotePath string) (string, bool) {
+	p, st := ms.lookup(remotePath)
+	return p, st == owned
+}
+
+// Unsupported reports whether a remote path belongs to a mapped item and is
+// not excluded, but cannot exist on this OS.
+func (ms Mappings) Unsupported(remotePath string) bool {
+	_, st := ms.lookup(remotePath)
+	return st == unsupportedName
 }
 
 // Owns reports whether a remote path belongs to a mapped item and is not excluded.
@@ -127,4 +181,49 @@ func filterOwned(files map[string]model.FileEntry, ms Mappings) map[string]model
 		}
 	}
 	return out
+}
+
+// RemotePathFor maps a local path back to the remote path it syncs to, when
+// this machine owns it (used to filter file-watcher events). A symlinked
+// root matches both as configured and as resolved. Item roots themselves
+// map to nothing.
+func (ms Mappings) RemotePathFor(abs string) (string, bool) {
+	abs = filepath.Clean(abs)
+	// Watchers may report the path with or without symlinks resolved (e.g.
+	// /var vs /private/var on macOS); try both. The file itself may be gone,
+	// so only its parent directory is resolved.
+	abss := []string{abs}
+	if real, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		if r := filepath.Join(real, filepath.Base(abs)); r != abs {
+			abss = append(abss, r)
+		}
+	}
+	for _, m := range ms {
+		roots := []string{m.LocalPath}
+		if real, err := filepath.EvalSymlinks(m.LocalPath); err == nil && real != m.LocalPath {
+			roots = append(roots, real)
+		}
+		for _, root := range roots {
+			for _, abs := range abss {
+				var key string
+				switch m.Type {
+				case model.ItemFile:
+					if abs != root {
+						continue
+					}
+					key = m.RemoteName
+				case model.ItemDir:
+					rel, err := filepath.Rel(root, abs)
+					if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+						continue
+					}
+					key = m.RemoteName + "/" + filepath.ToSlash(rel)
+				}
+				if ms.Owns(key) {
+					return key, true
+				}
+			}
+		}
+	}
+	return "", false
 }
