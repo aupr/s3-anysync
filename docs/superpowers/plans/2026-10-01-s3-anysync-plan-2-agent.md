@@ -4926,6 +4926,7 @@ import (
 
 	"github.com/niceit/s3-anysync/internal/api"
 	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/niceit/s3-anysync/internal/schedule"
 	"github.com/niceit/s3-anysync/internal/storage"
 )
 
@@ -4971,6 +4972,11 @@ func TestChangesSyncAutomaticallyBetweenMachines(t *testing.T) {
 }
 
 func TestScheduleTriggersSyncs(t *testing.T) {
+	// Production rejects schedules faster than schedule.MinInterval (one
+	// minute); this test needs a one-second schedule.
+	old := schedule.MinInterval
+	schedule.MinInterval = 0
+	t.Cleanup(func() { schedule.MinInterval = old })
 	e := newEnv(t, storage.NewMemory(), withTriggers)
 	act, _, _ := e.newTriggeredAction(t, 1, func(r *model.Rules) {
 		r.Triggers.Schedule = model.Schedule{Kind: model.ScheduleCron, Cron: "@every 1s"}
