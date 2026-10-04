@@ -29,6 +29,7 @@ export function Overview({ st }: { st: ActionStatus }) {
   // Commands with a request in flight; their button is disabled so a second
   // click cannot start a second request.
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set())
+  const pendingRef = useRef(new Set<string>())
   const alive = useRef(true)
   useEffect(() => {
     alive.current = true
@@ -39,11 +40,13 @@ export function Overview({ st }: { st: ActionStatus }) {
   const dir = st.action.machineDirections?.[machineId] ?? st.action.direction
 
   const run = async (key: string, fn: (id: string) => Promise<unknown>) => {
-    if (pending.has(key)) return
+    if (pendingRef.current.has(key)) return
+    pendingRef.current.add(key)
     setPending((s) => new Set(s).add(key))
     try {
       await fn(id)
     } finally {
+      pendingRef.current.delete(key)
       if (alive.current) setPending((s) => { const n = new Set(s); n.delete(key); return n })
     }
   }
@@ -54,17 +57,20 @@ export function Overview({ st }: { st: ActionStatus }) {
     setLeaveBusy(true)
     try {
       await api.leaveAction(id, force)
-      if (!alive.current) return
-      setLeaving(null)
+      // The router outlives this tab (the actions.changed refresh may already
+      // have dropped the action and unmounted us): always end on the list.
+      if (alive.current) setLeaving(null)
       navigate({ name: 'actions' })
     } catch (e) {
-      if (!alive.current) return
       const code = toAgentError(e).code
       if (force && code === 'not-found') {
         // The forced retry found nothing left locally: the action is gone.
-        setLeaving(null)
+        if (alive.current) setLeaving(null)
         navigate({ name: 'actions' })
-      } else if (!force && !retryLater.has(code)) {
+        return
+      }
+      if (!alive.current) return
+      if (!force && !retryLater.has(code)) {
         const d = describeError(e)
         setForceReason(d.details ? `${d.message} (${d.details})` : d.message)
         setLeaving('force')
@@ -81,13 +87,13 @@ export function Overview({ st }: { st: ActionStatus }) {
 
   return (
     <div className="space-y-4">
-      {st.state === 'paused-conflict' && (
+      {st.conflicts > 0 && (
         <div className="flex items-center justify-between rounded-md bg-amber-100 p-3 text-sm text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
           <span>{st.conflicts} file(s) changed on both sides. The action is paused until you choose.</span>
           <Button onClick={() => navigate({ name: 'conflicts', id })}>Resolve conflicts</Button>
         </div>
       )}
-      {st.state === 'paused-deletes' && (
+      {st.pendingDeletes > 0 && (
         <div className="flex items-center justify-between rounded-md bg-amber-100 p-3 text-sm text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
           <span>{st.pendingDeletes} deletion(s) are held back by the delete guard.</span>
           <Button onClick={() => navigate({ name: 'deletes', id })}>Review deletions</Button>
@@ -124,7 +130,7 @@ export function Overview({ st }: { st: ActionStatus }) {
       )}
       {leaving === 'force' && (
         <ConfirmDialog title="Leave anyway?" danger confirmLabel="Leave on this machine only" busy={leaveBusy}
-          message={<>The bucket could not be updated: {forceReason}. Leave on this machine only? Other machines will still list this machine until the bucket is reachable.</>}
+          message={<>Leaving did not complete: {forceReason}. You can leave on this machine only; other machines will still list this machine until the bucket is reachable.</>}
           onCancel={cancelLeave} onConfirm={() => leave(true)} />
       )}
     </div>

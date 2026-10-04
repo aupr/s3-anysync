@@ -1,7 +1,7 @@
 import { vi } from 'vitest'
 vi.mock('../../lib/bridge', () => import('../../test/mockBridge'))
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { bindings } from '../../test/mockBridge'
+import { bindings, emit } from '../../test/mockBridge'
 import App from '../../App'
 import type { ActionStatus } from '../../lib/types'
 
@@ -210,7 +210,7 @@ test('double clicking Save sends one request', async () => {
   expect(bindings.UpdateRules).toHaveBeenCalledTimes(1)
 })
 
-test('a save that finishes after the screen is gone does not warn', async () => {
+test('a save that finishes after the screen is gone does not warn or toast', async () => {
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
   const r = await openRules()
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Mine' } })
@@ -220,7 +220,26 @@ test('a save that finishes after the screen is gone does not warn', async () => 
   r.unmount()
   await act(async () => d.resolve(st({ name: 'Mine', updatedAt: '2026-10-04T02:00:00Z' }).action))
   expect(errors).not.toHaveBeenCalled()
+  expect(document.body.textContent).toBe('')
+  expect(screen.queryByText('Rules saved.')).not.toBeInTheDocument()
   errors.mockRestore()
+})
+
+test('Discard reloads from the latest version in the store, not the stale base', async () => {
+  await openRules()
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Mine' } })
+  const V2 = '2026-10-04T05:00:00.000000001Z'
+  bindings.Actions.mockResolvedValue([st({ name: 'Newer', updatedAt: V2 })])
+  act(() => emit('agent:event', { type: 'actions.changed', time: 't' }))
+  await waitFor(() => expect(bindings.Actions).toHaveBeenCalled())
+  await act(async () => {})
+  expect(screen.getByLabelText('Name')).toHaveValue('Mine')
+  fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+  expect(screen.getByLabelText('Name')).toHaveValue('Newer')
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Final' } })
+  bindings.UpdateRules.mockResolvedValue(st({ name: 'Final', updatedAt: '2026-10-04T06:00:00Z' }).action)
+  fireEvent.click(save())
+  await waitFor(() => expect(bindings.UpdateRules).toHaveBeenCalledWith('a1', expect.objectContaining({ expectedUpdatedAt: V2 })))
 })
 
 test('numbers are validated inline and never sent as 0 or NaN', async () => {

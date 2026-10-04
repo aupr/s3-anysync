@@ -185,6 +185,18 @@ test('remove confirm: a double click sends one request', async () => {
   await act(async () => { d.resolve() })
 })
 
+test('remove confirm: Escape does not close the dialog while the request is pending', async () => {
+  await openProfiles([prof])
+  fireEvent.click(await screen.findByRole('button', { name: 'Remove Home MinIO' }))
+  const d = deferred<void>()
+  bindings.RemoveProfile.mockReturnValueOnce(d.promise)
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove' }))
+  await waitFor(() => expect(bindings.RemoveProfile).toHaveBeenCalled())
+  fireEvent.keyDown(window, { key: 'Escape' })
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
+  await act(async () => { d.resolve() })
+})
+
 test('remove confirm: failure shows the agent message in a toast', async () => {
   await openProfiles([prof])
   bindings.RemoveProfile.mockRejectedValueOnce('{"code":"in-use","message":"used by Editor"}')

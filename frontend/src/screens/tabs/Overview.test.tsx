@@ -1,7 +1,7 @@
 import { vi } from 'vitest'
 vi.mock('../../lib/bridge', () => import('../../test/mockBridge'))
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { bindings } from '../../test/mockBridge'
+import { bindings, emit } from '../../test/mockBridge'
 import App from '../../App'
 import type { ActionStatus } from '../../lib/types'
 
@@ -36,7 +36,7 @@ test('shows the direction on this machine and the machines', async () => {
   expect(screen.getByText('mac, pc')).toBeInTheDocument()
 })
 
-test('banners link to conflicts, deletions and retry', async () => {
+test('the error banner shows the failure and Retry now resumes', async () => {
   await open(st({ state: 'error', lastError: 'boom', failures: 2 }))
   bindings.Resume.mockResolvedValue(undefined)
   expect(screen.getByText(/boom/)).toBeInTheDocument()
@@ -48,6 +48,45 @@ test('a conflict banner leads to the conflicts screen', async () => {
   await open(st({ state: 'paused-conflict', conflicts: 3 }))
   expect(screen.getByText(/3 file\(s\) changed on both sides/)).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Resolve conflicts' })).toBeInTheDocument()
+})
+
+test.each(['paused', 'paused-conflict'] as const)('the conflicts banner shows with state %s', async (state) => {
+  await open(st({ state, conflicts: 2 }))
+  expect(screen.getByText(/2 file\(s\) changed on both sides/)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Resolve conflicts' })).toBeInTheDocument()
+})
+
+test.each(['paused', 'paused-deletes'] as const)('the deletes banner shows with state %s and leads to the deletions', async (state) => {
+  await open(st({ state, pendingDeletes: 4 }))
+  expect(screen.getByText(/4 deletion\(s\) are held back/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Review deletions' }))
+  expect(await screen.findByText('This screen is added in a later task.')).toBeInTheDocument()
+})
+
+test('no conflicts or deletes banner without any', async () => {
+  await open(st({ state: 'paused' }))
+  expect(screen.queryByRole('button', { name: 'Resolve conflicts' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Review deletions' })).not.toBeInTheDocument()
+})
+
+test('a paused action shows Resume, and it resumes', async () => {
+  await open(st({ state: 'paused' }))
+  expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Sync now' })).toBeDisabled()
+  bindings.Resume.mockResolvedValue(undefined)
+  fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+  await waitFor(() => expect(bindings.Resume).toHaveBeenCalledWith('a1'))
+})
+
+test('two synchronous clicks send one request', async () => {
+  await open()
+  const d = deferred<unknown>()
+  bindings.Sync.mockReturnValue(d.promise)
+  const b = screen.getByRole('button', { name: 'Sync now' })
+  act(() => { b.click(); b.click() })
+  await waitFor(() => expect(bindings.Sync).toHaveBeenCalled())
+  expect(bindings.Sync).toHaveBeenCalledTimes(1)
+  await act(async () => d.resolve({ outcome: 'ok', uploaded: 0, downloaded: 0, deletedRemote: 0, deletedLocal: 0, adopted: 0, conflicts: null, deferred: null, pendingDeletes: null, unsupported: null }))
 })
 
 test('Sync now runs once even when clicked twice', async () => {
@@ -103,7 +142,9 @@ test.each(['access-denied', 'no-such-bucket', 'not-found', 'passphrase-missing',
     bindings.LeaveAction.mockRejectedValueOnce(`{"code":"${code}","message":"cannot update the bucket"}`)
     fireEvent.click(within(dlg).getByRole('button', { name: 'Leave' }))
     const force = await screen.findByRole('dialog', { name: 'Leave anyway?' })
-    expect(force).toHaveTextContent('cannot update the bucket')
+    expect(force).toHaveTextContent('Leaving did not complete:')
+    expect(force).toHaveTextContent('(cannot update the bucket). You can leave on this machine only')
+    expect(force).toHaveTextContent('You can leave on this machine only; other machines will still list this machine until the bucket is reachable.')
     fireEvent.click(within(force).getByRole('button', { name: 'Leave on this machine only' }))
     await waitFor(() => expect(bindings.LeaveAction).toHaveBeenLastCalledWith('a1', true))
     expect(await screen.findByRole('heading', { name: 'Actions' })).toBeInTheDocument()
@@ -155,5 +196,21 @@ test('leave: a result that arrives after the screen is gone does nothing', async
   r.unmount()
   await act(async () => d.reject('{"code":"access-denied","message":"403"}'))
   expect(errors).not.toHaveBeenCalled()
+  expect(document.body.textContent).toBe('')
   errors.mockRestore()
+})
+
+test('leave: ends on the Actions list even when the refresh already dropped the action', async () => {
+  const r = await open()
+  const dlg = openLeave()
+  const d = deferred<void>()
+  bindings.LeaveAction.mockReturnValue(d.promise)
+  bindings.Actions.mockResolvedValue([])
+  fireEvent.click(within(dlg).getByRole('button', { name: 'Leave' }))
+  act(() => emit('agent:event', { type: 'actions.changed', time: 't' }))
+  expect(await screen.findByText('This action no longer exists on this machine.')).toBeInTheDocument()
+  await act(async () => d.resolve())
+  expect(await screen.findByRole('heading', { name: 'Actions' })).toBeInTheDocument()
+  expect(screen.queryByText('This action no longer exists on this machine.')).not.toBeInTheDocument()
+  r.unmount()
 })

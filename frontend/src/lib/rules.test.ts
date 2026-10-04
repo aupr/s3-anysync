@@ -14,6 +14,15 @@ test('reapplyEdits keeps the other machine\'s changes and re-applies mine', () =
   expect(reapplyEdits(base, mine, theirs)).toEqual({ ...theirs, name: 'Mine', excludes: ['*.log'] })
 })
 
+test('reapplyEdits merges triggers per sub-field', () => {
+  const mine = { ...base, triggers: { ...base.triggers, debounceSeconds: 9 } }
+  const theirs = { ...base, triggers: { ...base.triggers, schedule: { kind: 'interval', everyMinutes: 15 } } } as Rules
+  expect(reapplyEdits(base, mine, theirs).triggers).toEqual({ onChange: true, debounceSeconds: 9, schedule: { kind: 'interval', everyMinutes: 15 }, remotePollMinutes: 5 })
+  const mineSched = { ...base, triggers: { ...base.triggers, schedule: { kind: 'daily', at: '03:00' } } } as Rules
+  const theirsPoll = { ...base, triggers: { ...base.triggers, remotePollMinutes: 1, onChange: false } }
+  expect(reapplyEdits(base, mineSched, theirsPoll).triggers).toEqual({ onChange: false, debounceSeconds: 5, schedule: { kind: 'daily', at: '03:00' }, remotePollMinutes: 1 })
+})
+
 test('normalizeSchedule drops the fields Go omits when zero (Sunday has no weekday)', () => {
   expect(normalizeSchedule({ kind: 'weekly', weekday: 0, at: '09:00' })).toEqual({ kind: 'weekly', at: '09:00' })
   expect(normalizeSchedule({ kind: 'weekly', weekday: 3, at: '09:00', everyMinutes: 0, cron: '' })).toEqual({ kind: 'weekly', weekday: 3, at: '09:00' })

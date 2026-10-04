@@ -30,11 +30,22 @@ export function rulesOf(a: Action): Rules {
 // the fresh rules another machine saved meanwhile.
 export function reapplyEdits(original: Rules, edited: Rules, fresh: Rules): Rules {
   const out: Rules = { ...fresh }
+  const differs = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b)
   for (const k of Object.keys(edited) as (keyof Rules)[]) {
-    if (JSON.stringify(edited[k]) !== JSON.stringify(original[k])) {
+    if (k === 'triggers') continue
+    if (differs(edited[k], original[k])) {
       ;(out as unknown as Record<string, unknown>)[k] = edited[k]
     }
   }
+  // Triggers are merged per sub-field so my edit of one does not revert
+  // another machine's change to a different one.
+  const triggers = { ...fresh.triggers }
+  for (const k of Object.keys(edited.triggers) as (keyof Rules['triggers'])[]) {
+    if (differs(edited.triggers[k], original.triggers[k])) {
+      ;(triggers as Record<string, unknown>)[k] = edited.triggers[k]
+    }
+  }
+  out.triggers = triggers
   return out
 }
 

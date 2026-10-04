@@ -84,7 +84,7 @@ export function Modal({ title, children, footer, onClose, wide }: { title: strin
 
 export function ConfirmDialog(p: { title: string; message: ReactNode; confirmLabel: string; danger?: boolean; busy?: boolean; onConfirm: () => void; onCancel: () => void }) {
   return (
-    <Modal title={p.title} onClose={p.onCancel} footer={
+    <Modal title={p.title} onClose={p.busy ? () => {} : p.onCancel} footer={
       <>
         <Button disabled={p.busy} onClick={p.onCancel}>Cancel</Button>
         <Button variant={p.danger ? 'danger' : 'primary'} disabled={p.busy} onClick={p.onConfirm}>{p.confirmLabel}</Button>

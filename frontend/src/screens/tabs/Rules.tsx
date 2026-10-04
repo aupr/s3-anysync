@@ -202,6 +202,15 @@ export function RulesTab({ st }: { st: ActionStatus }) {
     }
   }
 
+  // Discard goes back to the latest version in the store, which may be newer
+  // than the base the form was opened on.
+  const discard = () => {
+    setError('')
+    const a = st.action
+    if (isNewer(a.updatedAt, base.version)) load(rulesOf(a), a.updatedAt, a.machineDirections?.[machineId] ?? '')
+    else load(base.rules, base.version, base.machineDir)
+  }
+
   const reload = async (reapply: boolean) => {
     if (inflight.current) return
     inflight.current = true
@@ -286,7 +295,7 @@ export function RulesTab({ st }: { st: ActionStatus }) {
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
       <div className="flex gap-2">
         <Button variant="primary" disabled={!dirty || invalid || busy} onClick={save}>Save</Button>
-        <Button disabled={!dirty || busy} onClick={() => { setError(''); load(base.rules, base.version, base.machineDir) }}>Discard changes</Button>
+        <Button disabled={!dirty || busy} onClick={discard}>Discard changes</Button>
       </div>
       {conflict && (
         <Modal title="Changed elsewhere" onClose={() => { if (!inflight.current) setConflict(false) }} footer={
