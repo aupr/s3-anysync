@@ -122,6 +122,7 @@ type Settings struct {
 	Autostart          bool   `json:"autostart"`
 	AutostartSupported bool   `json:"autostartSupported"` // read-only
 	LogLevel           string `json:"logLevel"`
+	AutostartOffered   bool   `json:"autostartOffered"` // the first-run "start at login?" question was answered
 }
 
 // UpdateProfileRequest replaces a profile's fields; an empty Secret keeps the stored one.

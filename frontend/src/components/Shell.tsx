@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { AutostartPrompt } from './AutostartPrompt'
 import { useRouter, type Route } from '../lib/router'
 import { useStore } from '../lib/store'
 import { useTheme, type Theme } from '../lib/theme'
@@ -48,6 +49,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </div>
         )}
         <main className="min-h-0 flex-1 overflow-auto p-4">{children}</main>
+        <AutostartPrompt />
       </div>
     </div>
   )

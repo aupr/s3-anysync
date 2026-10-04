@@ -59,7 +59,7 @@ export interface ActionStatus {
   pendingDeletes: number
 }
 export interface Status { machineId: string; machineName: string; version: string; agent: boolean; actions: ActionStatus[] | null }
-export interface Settings { machineId: string; machineName: string; autostart: boolean; autostartSupported: boolean; logLevel: string }
+export interface Settings { machineId: string; machineName: string; autostart: boolean; autostartSupported: boolean; autostartOffered: boolean; logLevel: string }
 export interface Profile {
   id: string
   name: string

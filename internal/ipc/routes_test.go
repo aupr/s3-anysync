@@ -186,8 +186,11 @@ func TestEveryClientMethodReachesTheRightRoute(t *testing.T) {
 	}{
 		{"Status", func() error { _, e := c.Status(ctx); return e }, `Status `},
 		{"Settings", func() error { _, e := c.Settings(ctx); return e }, `Settings `},
-		{"UpdateSettings", func() error { _, e := c.UpdateSettings(ctx, api.Settings{MachineName: "m"}); return e },
-			`UpdateSettings ` + mj(api.Settings{MachineName: "m"})},
+		{"UpdateSettings", func() error {
+			_, e := c.UpdateSettings(ctx, api.Settings{MachineName: "m", AutostartOffered: true})
+			return e
+		},
+			`UpdateSettings ` + mj(api.Settings{MachineName: "m", AutostartOffered: true})},
 		{"Profiles", func() error { _, e := c.Profiles(ctx); return e }, `Profiles `},
 		{"AddProfile", func() error {
 			_, e := c.AddProfile(ctx, api.AddProfileRequest{Profile: model.Profile{Name: "p"}, Secret: "s"})

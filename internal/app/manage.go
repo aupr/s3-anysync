@@ -14,6 +14,7 @@ import (
 )
 
 const settingLogLevel = "log_level"
+const settingAutostartOffered = "autostart_offered"
 
 var logLevels = map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 
@@ -184,4 +185,18 @@ func (a *App) SetLogLevel(level string) error {
 		return fmt.Errorf("unknown log level %q (use debug, info, warn or error)", level)
 	}
 	return a.DB.SetSetting(settingLogLevel, level)
+}
+
+// AutostartOffered reports whether the user was already asked about starting at login.
+func (a *App) AutostartOffered() (bool, error) {
+	v, ok, err := a.DB.GetSetting(settingAutostartOffered)
+	return ok && v == "1", err
+}
+
+// SetAutostartOffered records whether the user was asked about starting at login.
+func (a *App) SetAutostartOffered(v bool) error {
+	if !v {
+		return a.DB.DeleteSetting(settingAutostartOffered)
+	}
+	return a.DB.SetSetting(settingAutostartOffered, "1")
 }

@@ -463,3 +463,38 @@ func TestActionStatusCarriesProfileID(t *testing.T) {
 		t.Fatalf("json = %s, %v", b, err)
 	}
 }
+
+func TestAutostartOfferedThroughSettings(t *testing.T) {
+	fa := &fakeAutostart{}
+	e := newEnv(t, storage.NewMemory(), func(o *Options) { o.Autostart = fa })
+	s, err := e.m.Settings(ctx)
+	if err != nil || s.AutostartOffered {
+		t.Fatalf("initial = %+v, %v", s, err)
+	}
+	s.AutostartOffered = true // "Not now"
+	if s, err = e.m.UpdateSettings(ctx, s); err != nil || !s.AutostartOffered || s.Autostart {
+		t.Fatalf("not now = %+v, %v", s, err)
+	}
+	e2 := newEnv(t, storage.NewMemory(), func(o *Options) { o.Autostart = &fakeAutostart{} })
+	s2, _ := e2.m.Settings(ctx)
+	s2.Autostart = true // changing autostart (CLI or Settings) also counts as offered
+	if s2, err = e2.m.UpdateSettings(ctx, s2); err != nil || !s2.AutostartOffered || !s2.Autostart {
+		t.Fatalf("enable = %+v, %v", s2, err)
+	}
+}
+
+type failingAutostart struct{ fakeAutostart }
+
+func (f *failingAutostart) Enable() error { return errors.New("launchctl failed") }
+
+func TestAutostartFailureDoesNotMarkOffered(t *testing.T) {
+	e := newEnv(t, storage.NewMemory(), func(o *Options) { o.Autostart = &failingAutostart{} })
+	s, _ := e.m.Settings(ctx)
+	s.Autostart, s.AutostartOffered = true, true // what the first-run prompt sends
+	if _, err := e.m.UpdateSettings(ctx, s); err == nil {
+		t.Fatal("expected the enable failure")
+	}
+	if s, _ := e.m.Settings(ctx); s.AutostartOffered || s.Autostart {
+		t.Fatalf("failed enable must leave the question open: %+v", s)
+	}
+}

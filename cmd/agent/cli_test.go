@@ -410,3 +410,22 @@ func TestCLIEarlyValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIAutostartEnableMarksOffered(t *testing.T) {
+	dir, sec, fa := t.TempDir(), secrets.NewMemory(), &fakeAutostart{}
+	open := func(ctx context.Context) (api.Service, func(), error) {
+		return connectTo(ctx, dir, sec, fa, nil)
+	}
+	runOK(t, open, "autostart", "enable")
+	if fa.enables != 1 {
+		t.Fatalf("enables = %d", fa.enables)
+	}
+	svc, closeFn, err := open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeFn()
+	if s, err := svc.Settings(context.Background()); err != nil || !s.AutostartOffered {
+		t.Fatalf("settings = %+v, %v", s, err)
+	}
+}

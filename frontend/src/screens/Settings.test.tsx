@@ -5,13 +5,15 @@ import { bindings } from '../test/mockBridge'
 import App from '../App'
 import type { Settings } from '../lib/types'
 
-const base: Settings = { machineId: 'm1', machineName: 'mac', autostart: false, autostartSupported: true, logLevel: 'info' }
+const base: Settings = { machineId: 'm1', machineName: 'mac', autostart: false, autostartSupported: true, autostartOffered: true, logLevel: 'info' }
 
 function boot() {
   bindings.ConnectionState.mockResolvedValue({ connected: true })
   bindings.Status.mockResolvedValue({ machineId: 'm1', machineName: 'mac', version: 'v1', agent: true, actions: [] })
   bindings.Profiles.mockResolvedValue([])
   bindings.DataDir.mockResolvedValue('/tmp/d')
+  // The shell's first-run AutostartPrompt reads the settings once, before any screen does.
+  bindings.Settings.mockResolvedValueOnce(base)
   render(<App />)
 }
 
@@ -29,7 +31,7 @@ test('settings: autostart hidden when unsupported; save sends the whole value', 
   fireEvent.change(screen.getByLabelText('Log level'), { target: { value: 'debug' } })
   bindings.UpdateSettings.mockResolvedValue({ ...base, autostartSupported: false, machineName: 'studio', logLevel: 'debug' })
   fireEvent.click(screen.getByText('Save'))
-  await waitFor(() => expect(bindings.UpdateSettings).toHaveBeenCalledWith({ machineId: 'm1', machineName: 'studio', autostart: false, autostartSupported: false, logLevel: 'debug' }))
+  await waitFor(() => expect(bindings.UpdateSettings).toHaveBeenCalledWith({ machineId: 'm1', machineName: 'studio', autostart: false, autostartSupported: false, autostartOffered: true, logLevel: 'debug' }))
   expect(await screen.findByText('Settings saved.')).toBeInTheDocument()
 })
 
@@ -155,7 +157,7 @@ test('a failed save refetches: autostart shows reality and the name edit stays',
   bindings.Settings.mockResolvedValue({ ...base, autostart: true })
   fireEvent.click(screen.getByText('Save'))
   expect(await screen.findByText('invalid: machine name taken')).toBeInTheDocument()
-  await waitFor(() => expect(bindings.Settings).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(bindings.Settings).toHaveBeenCalledTimes(3)) // prompt + load + refetch
   expect(screen.getByLabelText('Machine name')).toHaveValue('studio')
   expect(screen.getByLabelText('Start the agent when I log in')).toBeChecked()
 })
@@ -170,7 +172,7 @@ test('a failed save whose refetch also fails keeps the error and the form', asyn
   bindings.Settings.mockRejectedValue('{"code":"unreachable","message":"down"}')
   fireEvent.click(screen.getByText('Save'))
   expect(await screen.findByText('invalid: machine name taken')).toBeInTheDocument()
-  await waitFor(() => expect(bindings.Settings).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(bindings.Settings).toHaveBeenCalledTimes(3)) // prompt + load + refetch
   expect(screen.getByLabelText('Machine name')).toHaveValue('studio')
   expect(screen.getByLabelText('Start the agent when I log in')).toBeChecked()
   expect(screen.getByText('Save')).toBeEnabled()

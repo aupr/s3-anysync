@@ -460,3 +460,22 @@ func TestUpdateRulesDetectsEditConflict(t *testing.T) {
 		t.Fatalf("edit on the fresh version: %v", err)
 	}
 }
+
+func TestAutostartOffered(t *testing.T) {
+	a := newTestApp(t, storage.NewMemory())
+	if v, err := a.AutostartOffered(); err != nil || v {
+		t.Fatalf("default = %v, %v", v, err)
+	}
+	if err := a.SetAutostartOffered(true); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := a.AutostartOffered(); !v {
+		t.Fatal("not stored")
+	}
+	if err := a.SetAutostartOffered(false); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := a.AutostartOffered(); v {
+		t.Fatal("not cleared")
+	}
+}

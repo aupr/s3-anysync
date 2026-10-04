@@ -222,6 +222,7 @@ export namespace api {
 	    autostart: boolean;
 	    autostartSupported: boolean;
 	    logLevel: string;
+	    autostartOffered: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -234,6 +235,7 @@ export namespace api {
 	        this.autostart = source["autostart"];
 	        this.autostartSupported = source["autostartSupported"];
 	        this.logLevel = source["logLevel"];
+	        this.autostartOffered = source["autostartOffered"];
 	    }
 	}
 	export class Status {
