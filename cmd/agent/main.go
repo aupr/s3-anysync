@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,6 +23,10 @@ func init() { runtime.LockOSThread() }
 func main() {
 	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "run" {
+		if err := checkRunAllowed(role); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
 		os.Exit(runAgentCommand(args[1:], os.Stderr))
 	}
 	os.Exit(run(args, os.Stdout, os.Stderr, connectDefault))
@@ -40,7 +45,7 @@ func connectDefault(ctx context.Context) (api.Service, func(), error) {
 	return connectTo(ctx, dir, sec, defaultAutostart(), nil)
 }
 
-// defaultAutostart registers this executable with "run"; nil if unsupported.
+// defaultAutostart registers this executable (the sibling agent in the CLI role) with "run"; nil if unsupported.
 // It is also nil whenever S3_ANYSYNC_DATA_DIR is set: the login item is per
 // user and starts the default data folder, so a development data folder must
 // never touch it.
@@ -56,7 +61,11 @@ func defaultAutostart() agent.Autostart {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	m, err := autostart.New(exe, []string{"run"})
+	target, err := autostartTarget(exe, role)
+	if err != nil {
+		return nil
+	}
+	m, err := autostart.New(target, []string{"run"})
 	if err != nil {
 		return nil
 	}
