@@ -37,14 +37,14 @@ func NewApp(conn *Conn, dlg Dialogs, dataDir string) *App {
 // do calls the agent. Calls are not cut short by the GUI: a sync may take long.
 func do[T any](a *App, f func(ctx context.Context, s api.Service) (T, error)) (T, error) {
 	var zero T
-	s, err := a.conn.Service()
+	s, gen, err := a.conn.service()
 	if err != nil {
 		return zero, encode(err)
 	}
 	v, err := f(context.Background(), s)
 	if err != nil {
 		if lostConnection(err) {
-			a.conn.Lost()
+			a.conn.Lost(gen)
 			return zero, encode(fmt.Errorf("%w: %v", ErrUnreachable, err))
 		}
 		return zero, encode(err)

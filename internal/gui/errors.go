@@ -43,5 +43,5 @@ func lostConnection(err error) bool {
 	}
 	var ue *url.Error
 	var ne net.Error
-	return errors.As(err, &ue) || errors.As(err, &ne) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
+	return errors.As(err, &ue) || errors.As(err, &ne) || errors.Is(err, io.ErrUnexpectedEOF)
 }

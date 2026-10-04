@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/niceit/s3-anysync/internal/api"
@@ -45,11 +46,15 @@ type ConnOptions struct {
 // Conn keeps the GUI connected to the agent.
 type Conn struct {
 	o    ConnOptions
-	kick chan bool // wakes the reconnect wait; true also starts the agent
+	kick chan struct{} // wakes the reconnect wait
+	// launchRequested: Retry asked for the agent to be started; consumed by
+	// the next connect attempt.
+	launchRequested atomic.Bool
 
 	mu     sync.Mutex
 	client Client
 	drop   context.CancelFunc // ends the current session
+	gen    uint64             // counts sessions; Lost ignores an older one
 	state  ConnState
 }
 
@@ -70,16 +75,17 @@ func NewConn(o ConnOptions) *Conn {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
-	return &Conn{o: o, kick: make(chan bool, 1), state: ConnState{Reason: "connecting to the agent"}}
+	return &Conn{o: o, kick: make(chan struct{}, 1), state: ConnState{Reason: "connecting to the agent"}}
 }
 
 // Run connects (starting the agent on the first attempt), forwards events
 // and reconnects until ctx ends.
 func (c *Conn) Run(ctx context.Context) {
-	launch := true
+	first := true
 	for ctx.Err() == nil {
+		launch := c.launchRequested.Swap(false) || first
+		first = false
 		cl, err := c.connect(ctx, launch)
-		launch = false
 		if err == nil {
 			c.session(ctx, cl)
 		} else if ctx.Err() == nil {
@@ -88,7 +94,7 @@ func (c *Conn) Run(ctx context.Context) {
 		}
 		select {
 		case <-ctx.Done():
-		case launch = <-c.kick:
+		case <-c.kick:
 		case <-time.After(c.o.Retry):
 		}
 	}
@@ -106,6 +112,7 @@ func (c *Conn) session(ctx context.Context, cl Client) {
 		return
 	}
 	c.set(cl, cancel, ConnState{Connected: true})
+	c.launchRequested.Store(false)
 	for ev := range events {
 		c.o.Emit(EventAgent, ev)
 	}
@@ -149,6 +156,9 @@ func (c *Conn) set(cl Client, drop context.CancelFunc, st ConnState) {
 	c.mu.Lock()
 	changed := c.state != st
 	c.client, c.drop, c.state = cl, drop, st
+	if cl != nil {
+		c.gen++
+	}
 	c.mu.Unlock()
 	if changed {
 		c.o.Emit(EventConnection, st)
@@ -157,12 +167,18 @@ func (c *Conn) set(cl Client, drop context.CancelFunc, st ConnState) {
 
 // Service returns the current connection, or ErrUnreachable.
 func (c *Conn) Service() (api.Service, error) {
+	s, _, err := c.service()
+	return s, err
+}
+
+// service returns the current connection and the number of its session.
+func (c *Conn) service() (api.Service, uint64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.client == nil {
-		return nil, ErrUnreachable
+		return nil, 0, ErrUnreachable
 	}
-	return c.client, nil
+	return c.client, c.gen, nil
 }
 
 // State returns the connection state.
@@ -173,23 +189,33 @@ func (c *Conn) State() ConnState {
 }
 
 // Retry reconnects now and starts the agent if it still does not answer.
+// It does nothing while connected.
 func (c *Conn) Retry() {
+	if c.State().Connected {
+		return
+	}
+	c.launchRequested.Store(true)
+	c.wake()
+}
+
+func (c *Conn) wake() {
 	select {
-	case c.kick <- true:
+	case c.kick <- struct{}{}:
 	default:
 	}
 }
 
-// Lost ends the current session after a failed call; Run reconnects.
-func (c *Conn) Lost() {
+// Lost ends session gen after a failed call; Run reconnects. A call that
+// began on an earlier session cannot end a newer one.
+func (c *Conn) Lost(gen uint64) {
 	c.mu.Lock()
-	drop := c.drop
+	drop, stale := c.drop, gen != c.gen
 	c.mu.Unlock()
+	if stale {
+		return
+	}
 	if drop != nil {
 		drop()
 	}
-	select {
-	case c.kick <- false:
-	default:
-	}
+	c.wake()
 }

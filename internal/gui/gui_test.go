@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/url"
 	"reflect"
 	"strings"
@@ -240,6 +242,100 @@ func TestTransportErrorDropsTheSession(t *testing.T) {
 	waitFor(t, "session dropped", func() bool { return rec.find(connected(false)) })
 }
 
+func TestRetryWhileConnectedDoesNotLaunchOnReconnect(t *testing.T) {
+	first, second := newFake(), newFake()
+	var n, launched atomic.Int32
+	c, rec := start(t, func() (Client, error) {
+		switch n.Add(1) {
+		case 1:
+			return first, nil
+		case 2:
+			return nil, errors.New("down")
+		}
+		return second, nil
+	}, func(string) error { launched.Add(1); return nil })
+	waitFor(t, "connected", func() bool { return rec.find(connected(true)) })
+	c.Retry()
+	close(first.gone)
+	waitFor(t, "reconnected", func() bool { return rec.count(connected(true)) == 2 })
+	if l := launched.Load(); l != 0 {
+		t.Fatalf("a Retry while connected launched the agent %d times on reconnect", l)
+	}
+}
+
+func TestLostDoesNotSwallowRetry(t *testing.T) {
+	var launched, calls atomic.Int32
+	var armed atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	c, rec := start(t, func() (Client, error) {
+		calls.Add(1)
+		if launched.Load() >= 1 && armed.CompareAndSwap(true, false) {
+			entered <- struct{}{}
+			<-release
+		}
+		return nil, errors.New("no agent")
+	}, func(string) error { launched.Add(1); return nil })
+	waitFor(t, "start timeout reported", func() bool {
+		return rec.find(func(e emitted) bool {
+			s, ok := e.data.(ConnState)
+			return ok && strings.Contains(s.Reason, "did not start")
+		})
+	})
+	armed.Store(true)
+	<-entered
+	c.Lost(0)
+	c.Retry()
+	close(release)
+	waitFor(t, "retry launches", func() bool { return launched.Load() == 2 })
+}
+
+func TestStaleLostKeepsTheCurrentSession(t *testing.T) {
+	first, second := newFake(), newFake()
+	var n atomic.Int32
+	c, rec := start(t, func() (Client, error) {
+		if n.Add(1) == 1 {
+			return first, nil
+		}
+		return second, nil
+	}, nil)
+	waitFor(t, "connected", func() bool { return rec.find(connected(true)) })
+	_, oldGen, err := c.service()
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(first.gone)
+	waitFor(t, "reconnected", func() bool { return rec.count(connected(true)) == 2 })
+	c.Lost(oldGen)
+	time.Sleep(50 * time.Millisecond)
+	if !c.State().Connected || second.closed.Load() {
+		t.Fatal("a stale Lost ended the healthy session")
+	}
+	_, gen, _ := c.service()
+	c.Lost(gen)
+	waitFor(t, "current Lost drops the session", func() bool { return second.closed.Load() })
+}
+
+func TestLostConnection(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"unauthorized", &api.RemoteError{Code: "unauthorized"}, true},
+		{"other remote", &api.RemoteError{Code: "in-use"}, false},
+		{"url error", &url.Error{Op: "Get", URL: "http://a", Err: errors.New("refused")}, true},
+		{"unexpected EOF", io.ErrUnexpectedEOF, true},
+		{"EOF", io.EOF, false},
+		{"plain", errors.New("boom"), false},
+		{"wrapped url error", fmt.Errorf("call: %w", &url.Error{Op: "Get", URL: "http://a", Err: errors.New("refused")}), true},
+	}
+	for _, tc := range cases {
+		if got := lostConnection(tc.err); got != tc.want {
+			t.Errorf("%s: lostConnection = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestErrorEncoding(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -330,14 +426,21 @@ func TestLocalHelpers(t *testing.T) {
 	a := NewApp(NewConn(ConnOptions{}), d, "/data")
 	var opened []string
 	a.open = func(p string) error { opened = append(opened, p); return nil }
-	if p, _ := a.PickFolder("Pick"); p != "/d" {
-		t.Fatal(p)
+	if p, err := a.PickFolder("Pick folder"); err != nil || p != "/d" {
+		t.Fatal(p, err)
 	}
-	if p, _ := a.PickFile("Pick"); p != "/f" {
-		t.Fatal(p)
+	if p, err := a.PickFile("Pick file"); err != nil || p != "/f" {
+		t.Fatal(p, err)
 	}
-	a.OpenDataFolder()
-	a.OpenLogFolder()
+	if want := []string{"Pick folder", "Pick file"}; !reflect.DeepEqual(d.titles, want) {
+		t.Fatalf("dialog titles = %v, want %v", d.titles, want)
+	}
+	if err := a.OpenDataFolder(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OpenLogFolder(); err != nil {
+		t.Fatal(err)
+	}
 	if len(opened) != 2 || opened[0] != "/data" || !strings.HasSuffix(opened[1], "logs") {
 		t.Fatalf("opened = %v", opened)
 	}
