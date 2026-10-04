@@ -3,6 +3,9 @@
 *.db-wal
 *.db-shm
 /frontend/node_modules/
-/frontend/dist/
+/cmd/gui/dist/*
+!/cmd/gui/dist/.keep
+/cmd/gui/build/bin/
 /build/bin/
 .superpowers/
+/frontend/package.json.md5
