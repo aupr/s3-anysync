@@ -18,7 +18,7 @@ mode=${1:-all}
 WAILS=${WAILS:-$HOME/go/bin/wails}
 need go npm git shasum
 case $mode in all | --mac-only) need lipo hdiutil ditto codesign /usr/libexec/PlistBuddy ;; esac
-# Windows tools are added here in Task 5 (all and --windows-only).
+case $mode in all | --windows-only) need makensis ;; esac
 [[ -x $WAILS ]] || die "wails CLI not found at $WAILS (go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0)"
 
 ver=$(scripts/version.sh) || die "scripts/version.sh failed"
@@ -29,7 +29,8 @@ log "version $VERSION ($NUMERIC)"
 DIST=$PWD/dist
 STAGE=$DIST/stage
 [[ -f go.mod && -d scripts && $DIST == "$PWD/dist" ]] || die "refusing to clean $DIST"
-trap 'rm -rf "$STAGE"' EXIT
+# KEEP_STAGE=1 keeps dist/stage (debugging and inspection of the staged executables).
+trap '[[ -n ${KEEP_STAGE:-} ]] || rm -rf "$STAGE"' EXIT
 shopt -s nullglob
 case $mode in
   all) rm -rf "$DIST" ;;
@@ -80,7 +81,35 @@ build_mac() {
 }
 
 build_windows() {
-  die "Windows build is added in Task 5"
+  local win=$STAGE/win v4
+  v4=$(numeric4 "$NUMERIC")
+  mkdir -p "$win"
+  # The executables stay in $STAGE/win until the script exits (verify-dist reads them).
+  log "Windows GUI"
+  (cd cmd/gui && "$WAILS" build -clean -platform windows/amd64 -ldflags "$LDVER" -s)
+  cp cmd/gui/build/bin/s3-anysync.exe "$win/"
+
+  log "Windows agent and CLI"
+  rm -f cmd/agent/*.syso
+  go run github.com/tc-hib/go-winres@v0.3.3 simply \
+    --arch amd64 --out cmd/agent/rsrc --manifest cli \
+    --icon cmd/gui/build/windows/icon.ico \
+    --product-name s3-anysync --product-version "$v4" --file-version "$v4" \
+    --file-description "s3-anysync agent and command-line tool" --copyright niceit
+  # rsrc_windows_amd64.syso is only linked into windows/amd64 builds; never keep it.
+  trap 'rm -f cmd/agent/*.syso' RETURN
+  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+    -ldflags "$LDVER -X main.role=agent -H=windowsgui" -o "$win/s3-anysync-agent.exe" ./cmd/agent
+  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+    -ldflags "$LDVER -X main.role=cli" -o "$win/s3-anysync-cli.exe" ./cmd/agent
+  rm -f cmd/agent/*.syso
+
+  log "Windows installer"
+  # makensis aborts (std::bad_alloc) under an unset or C locale, so pin a UTF-8 one.
+  LC_ALL=en_US.UTF-8 makensis -V2 -WX -DVERSION="$VERSION" -DVERSION4="$v4" -DSRCDIR="$win" \
+    -DICON="$PWD/cmd/gui/build/windows/icon.ico" \
+    -DOUTFILE="$DIST/s3-anysync-$VERSION-windows-amd64-installer.exe" \
+    packaging/windows/s3-anysync.nsi
 }
 
 case $mode in
