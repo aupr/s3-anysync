@@ -38,6 +38,7 @@ var codes = []struct {
 	{"access-denied", http.StatusForbidden, []error{storage.ErrAccessDenied}},
 	{"no-such-bucket", http.StatusUnprocessableEntity, []error{storage.ErrNoSuchBucket}},
 	{"in-use", http.StatusConflict, []error{app.ErrInUse}},
+	{"conflict-edit", http.StatusConflict, []error{engine.ErrEditConflict}},
 	{"busy", http.StatusConflict, []error{datalock.ErrBusy}},
 	{"not-found", http.StatusNotFound, []error{ErrNotFound, state.ErrNotFound, storage.ErrNotFound}},
 	{"invalid", http.StatusBadRequest, []error{ErrInvalid, engine.ErrInvalidInput, engine.ErrProtectedPath}},

@@ -169,9 +169,9 @@ func (c *Client) JoinAction(ctx context.Context, req api.JoinActionRequest) (mod
 	return v, c.call(ctx, "POST", "/actions/join", req, &v)
 }
 
-func (c *Client) UpdateRules(ctx context.Context, id string, rules model.Rules) (model.Action, error) {
+func (c *Client) UpdateRules(ctx context.Context, id string, req api.UpdateRulesRequest) (model.Action, error) {
 	var v model.Action
-	return v, c.call(ctx, "PUT", "/actions/"+esc(id)+"/rules", rules, &v)
+	return v, c.call(ctx, "PUT", "/actions/"+esc(id)+"/rules", req, &v)
 }
 
 func (c *Client) SetMachineDirection(ctx context.Context, id string, d model.Direction) error {

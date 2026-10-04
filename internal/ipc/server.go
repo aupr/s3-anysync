@@ -132,7 +132,7 @@ func (s *Server) routes() http.Handler {
 		return nil, svc.LeaveAction(r.Context(), id(r), r.URL.Query().Get("force") == "1")
 	})
 	h("PUT /actions/{id}/rules", func(r *http.Request) (any, error) {
-		var in model.Rules
+		var in api.UpdateRulesRequest
 		if err := decode(r, &in); err != nil {
 			return nil, err
 		}

@@ -169,6 +169,12 @@ func (m *Manager) mutate(ctx context.Context, id string, fn func(ctx context.Con
 	}
 	return w.do(ctx, func(c context.Context) (any, error) {
 		v, err := fn(c)
+		if errors.Is(err, engine.ErrEditConflict) {
+			// The local copy was refreshed from the bucket: rebuild and announce it.
+			w.runner = nil
+			m.bus.publish(api.Event{Type: api.EventActions, ActionID: id})
+			w.publishState()
+		}
 		if err != nil {
 			return v, err
 		}
@@ -184,8 +190,10 @@ func (m *Manager) mutate(ctx context.Context, id string, fn func(ctx context.Con
 	})
 }
 
-func (m *Manager) UpdateRules(ctx context.Context, id string, rules model.Rules) (model.Action, error) {
-	v, err := m.mutate(ctx, id, func(c context.Context) (any, error) { return m.app.UpdateRules(c, id, rules) })
+func (m *Manager) UpdateRules(ctx context.Context, id string, req api.UpdateRulesRequest) (model.Action, error) {
+	v, err := m.mutate(ctx, id, func(c context.Context) (any, error) {
+		return m.app.UpdateRules(c, id, req.Rules, req.ExpectedUpdatedAt)
+	})
 	a, _ := v.(model.Action)
 	return a, err
 }

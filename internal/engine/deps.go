@@ -25,6 +25,8 @@ var (
 	// ErrInvalidInput: the caller's request is wrong (not a sync failure):
 	// an unknown side, nothing to resolve or approve, a missing choice.
 	ErrInvalidInput = errors.New("invalid input")
+	// ErrEditConflict: the action changed (on any machine) after the editor loaded it.
+	ErrEditConflict = errors.New("the action was changed elsewhere since it was loaded")
 	// ErrRootMissing: an item's local folder (or a file item's parent folder)
 	// is missing although content under it was synced before; it is refused
 	// rather than treated as a mass deletion.

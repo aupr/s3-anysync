@@ -358,8 +358,13 @@ func TestRulesAndItemsThroughManager(t *testing.T) {
 	act, it, _ := e.newAction(t, 1)
 	rules := act.Rules()
 	rules.Name = "Editor 2"
-	if updated, err := e.m.UpdateRules(ctx, act.ID, rules); err != nil || updated.Name != "Editor 2" {
+	req := e.rulesReq(t, act.ID, rules)
+	if updated, err := e.m.UpdateRules(ctx, act.ID, req); err != nil || updated.Name != "Editor 2" {
 		t.Fatalf("UpdateRules = %+v, %v", updated, err)
+	}
+	// The same version again is stale now.
+	if _, err := e.m.UpdateRules(ctx, act.ID, req); api.Code(err) != "conflict-edit" {
+		t.Fatalf("stale UpdateRules: %v (code %q)", err, api.Code(err))
 	}
 	if err := e.m.SetMachineDirection(ctx, act.ID, model.LocalToCloud); err != nil {
 		t.Fatal(err)

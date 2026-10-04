@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/niceit/s3-anysync/internal/engine"
 	"github.com/niceit/s3-anysync/internal/model"
@@ -58,7 +59,8 @@ func TestUpdateRules(t *testing.T) {
 	rules.Triggers.OnChange = true
 	rules.Triggers.Schedule = model.Schedule{Kind: model.ScheduleDaily, At: "09:30"}
 	rules.Excludes = []string{"*.log"}
-	updated, err := a.UpdateRules(ctx, act.ID, rules)
+	cur, _ := a.Action(act.ID)
+	updated, err := a.UpdateRules(ctx, act.ID, rules, cur.UpdatedAt)
 	if err != nil || updated.Name != "Editor settings" || !updated.Triggers.OnChange {
 		t.Fatalf("UpdateRules = %+v, %v", updated, err)
 	}
@@ -71,7 +73,7 @@ func TestUpdateRules(t *testing.T) {
 	}
 	rules.Triggers.Schedule = model.Schedule{Kind: model.ScheduleDaily, At: "9:30"}
 	rules.Name = "Bad"
-	if _, err := a.UpdateRules(ctx, act.ID, rules); err == nil {
+	if _, err := a.UpdateRules(ctx, act.ID, rules, updated.UpdatedAt); err == nil {
 		t.Fatal("invalid schedule accepted")
 	}
 	if shared, _ := engine.FetchAction(ctx, store, "", act.ID); shared.Name != "Editor settings" {
@@ -221,6 +223,7 @@ func bucketAndLocal(t *testing.T, a *App, store *storage.Memory, id string) (mod
 func TestUpdateRulesRejectsInvalid(t *testing.T) {
 	a, store, act, _, _, _ := manageFixture(t, false)
 	good := act.Rules()
+	cur, _ := a.Action(act.ID)
 	sharedBefore, localBefore := bucketAndLocal(t, a, store, act.ID)
 	bad := map[string]func(*model.Rules){
 		"exclude":   func(r *model.Rules) { r.Excludes = []string{"["} },
@@ -230,7 +233,7 @@ func TestUpdateRulesRejectsInvalid(t *testing.T) {
 	for name, mut := range bad {
 		r := good
 		mut(&r)
-		if _, err := a.UpdateRules(ctx, act.ID, r); err == nil {
+		if _, err := a.UpdateRules(ctx, act.ID, r, cur.UpdatedAt); err == nil {
 			t.Errorf("%s: invalid rules accepted", name)
 		}
 		shared, local := bucketAndLocal(t, a, store, act.ID)
@@ -413,4 +416,47 @@ func TestItemsCannotContainTheDataFolder(t *testing.T) {
 		t.Fatalf("a refused item was published: %+v", got.Items)
 	}
 	_ = file
+}
+
+func TestUpdateRulesDetectsEditConflict(t *testing.T) {
+	a, store, act, _, _, _ := manageFixture(t, false)
+	cur, _ := a.Action(act.ID)
+	r := cur.Rules()
+	r.Name = "first"
+	first, err := a.UpdateRules(ctx, act.ID, r, cur.UpdatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An edit based on the old version is refused and changes nothing.
+	r.Name = "second"
+	if _, err := a.UpdateRules(ctx, act.ID, r, cur.UpdatedAt); !errors.Is(err, engine.ErrEditConflict) {
+		t.Fatalf("stale edit: %v", err)
+	}
+	if shared, _ := engine.FetchAction(ctx, store, "", act.ID); shared.Name != "first" {
+		t.Fatalf("bucket copy = %q", shared.Name)
+	}
+	if _, err := a.UpdateRules(ctx, act.ID, r, time.Time{}); !errors.Is(err, engine.ErrInvalidInput) {
+		t.Fatalf("zero version: %v", err)
+	}
+
+	// Another machine edits the bucket copy: the conflict refreshes the local copy.
+	p, _ := a.DB.GetProfile(cur.ProfileID)
+	d, err := a.deps(p, act.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := engine.UpdateSharedAction(ctx, d, p.RootPrefix, act.ID, func(x *model.Action) error { x.Name = "remote"; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.UpdateRules(ctx, act.ID, r, first.UpdatedAt); !errors.Is(err, engine.ErrEditConflict) {
+		t.Fatalf("edit after a remote change: %v", err)
+	}
+	local, _ := a.Action(act.ID)
+	if local.Name != "remote" || !local.UpdatedAt.Equal(remote.UpdatedAt) || local.ProfileID != cur.ProfileID {
+		t.Fatalf("local copy not refreshed: %+v", local)
+	}
+	if _, err := a.UpdateRules(ctx, act.ID, r, local.UpdatedAt); err != nil {
+		t.Fatalf("edit on the fresh version: %v", err)
+	}
 }

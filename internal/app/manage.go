@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/niceit/s3-anysync/internal/engine"
 	"github.com/niceit/s3-anysync/internal/model"
 	"github.com/niceit/s3-anysync/internal/schedule"
 	"github.com/niceit/s3-anysync/internal/secrets"
@@ -22,14 +24,32 @@ func (a *App) Action(id string) (model.Action, error) { return a.DB.GetAction(id
 func (a *App) Profile(id string) (model.Profile, error) { return a.DB.GetProfile(id) }
 
 // UpdateRules changes an action's editable settings for every machine.
-func (a *App) UpdateRules(ctx context.Context, actionID string, r model.Rules) (model.Action, error) {
+// expected is the UpdatedAt the editor loaded; if the bucket's copy has
+// another version nothing is written, the local copy is replaced by the
+// bucket's and engine.ErrEditConflict is returned.
+func (a *App) UpdateRules(ctx context.Context, actionID string, r model.Rules, expected time.Time) (model.Action, error) {
+	if expected.IsZero() {
+		return model.Action{}, fmt.Errorf("%w: the version (updatedAt) of the edited action is required", engine.ErrInvalidInput)
+	}
 	if err := schedule.Validate(r.Triggers.Schedule); err != nil {
 		return model.Action{}, err
 	}
-	return a.updateShared(ctx, actionID, func(act *model.Action) error {
+	var fresh model.Action
+	updated, err := a.updateShared(ctx, actionID, func(act *model.Action) error {
+		if !act.UpdatedAt.Equal(expected) {
+			fresh = *act
+			return fmt.Errorf("%w (now version %s)", engine.ErrEditConflict, act.UpdatedAt.Format(time.RFC3339Nano))
+		}
 		act.ApplyRules(r)
 		return nil
 	})
+	if errors.Is(err, engine.ErrEditConflict) {
+		if local, lerr := a.DB.GetAction(actionID); lerr == nil {
+			fresh.ProfileID = local.ProfileID
+			_ = a.savePutAction(fresh) // best effort: the conflict is reported either way
+		}
+	}
+	return updated, err
 }
 
 // dropBaselineOfItem drops the baseline of an item known in the local copy

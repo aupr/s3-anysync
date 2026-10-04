@@ -113,7 +113,11 @@ func TestEndToEndOverIPC(t *testing.T) {
 	}
 	rules := act.Rules()
 	rules.Name = "Renamed"
-	if a, err := c.UpdateRules(ctx, act.ID, rules); err != nil || a.Name != "Renamed" {
+	cur, err := c.Action(ctx, act.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := c.UpdateRules(ctx, act.ID, api.UpdateRulesRequest{Rules: rules, ExpectedUpdatedAt: cur.Action.UpdatedAt}); err != nil || a.Name != "Renamed" {
 		t.Fatalf("rules = %+v, %v", a, err)
 	}
 	if h, err := c.History(ctx, act.ID, 10); err != nil || len(h) == 0 {

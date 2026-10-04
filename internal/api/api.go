@@ -31,7 +31,8 @@ type Service interface {
 	Action(ctx context.Context, actionID string) (ActionStatus, error)
 	CreateAction(ctx context.Context, req CreateActionRequest) (model.Action, error)
 	JoinAction(ctx context.Context, req JoinActionRequest) (model.Action, error)
-	UpdateRules(ctx context.Context, actionID string, rules model.Rules) (model.Action, error)
+	// UpdateRules fails with code conflict-edit when the action changed since req.ExpectedUpdatedAt.
+	UpdateRules(ctx context.Context, actionID string, req UpdateRulesRequest) (model.Action, error)
 	SetMachineDirection(ctx context.Context, actionID string, d model.Direction) error
 	LeaveAction(ctx context.Context, actionID string, force bool) error
 
@@ -131,6 +132,13 @@ type JoinActionRequest struct {
 	ProfileID  string `json:"profileId"`
 	ActionID   string `json:"actionId"`
 	Passphrase string `json:"passphrase,omitempty"`
+}
+
+// UpdateRulesRequest edits an action's rules; ExpectedUpdatedAt is the
+// UpdatedAt of the action as the editor loaded it.
+type UpdateRulesRequest struct {
+	Rules             model.Rules `json:"rules"`
+	ExpectedUpdatedAt time.Time   `json:"expectedUpdatedAt"`
 }
 
 // AddItemRequest adds an item mapped to LocalPath on this machine.

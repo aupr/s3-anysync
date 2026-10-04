@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/niceit/s3-anysync/internal/api"
 	"github.com/niceit/s3-anysync/internal/engine"
@@ -80,8 +81,8 @@ func (r *rec) CreateAction(_ context.Context, q api.CreateActionRequest) (model.
 func (r *rec) JoinAction(_ context.Context, q api.JoinActionRequest) (model.Action, error) {
 	return model.Action{}, r.log("JoinAction", q)
 }
-func (r *rec) UpdateRules(_ context.Context, id string, ru model.Rules) (model.Action, error) {
-	return model.Action{}, r.log("UpdateRules", id, ru)
+func (r *rec) UpdateRules(_ context.Context, id string, q api.UpdateRulesRequest) (model.Action, error) {
+	return model.Action{}, r.log("UpdateRules", id, q)
 }
 func (r *rec) SetMachineDirection(_ context.Context, id string, d model.Direction) error {
 	return r.log("SetMachineDirection", id, d)
@@ -176,6 +177,7 @@ func TestEveryClientMethodReachesTheRightRoute(t *testing.T) {
 
 	const weird = "a b?c"
 	rules := model.Rules{Name: "R", Direction: model.TwoWay}
+	req := api.UpdateRulesRequest{Rules: rules, ExpectedUpdatedAt: time.Date(2026, 10, 4, 1, 2, 3, 4, time.UTC)}
 	tests := []struct {
 		name string
 		call func() error
@@ -207,7 +209,7 @@ func TestEveryClientMethodReachesTheRightRoute(t *testing.T) {
 			_, e := c.JoinAction(ctx, api.JoinActionRequest{ProfileID: "p", ActionID: "a"})
 			return e
 		}, `JoinAction ` + mj(api.JoinActionRequest{ProfileID: "p", ActionID: "a"})},
-		{"UpdateRules", func() error { _, e := c.UpdateRules(ctx, weird, rules); return e }, `UpdateRules "a b?c"|` + mj(rules)},
+		{"UpdateRules", func() error { _, e := c.UpdateRules(ctx, weird, req); return e }, `UpdateRules "a b?c"|` + mj(req)},
 		{"SetMachineDirection", func() error { return c.SetMachineDirection(ctx, "a/b", model.TwoWay) }, `SetMachineDirection "a/b"|"two-way"`},
 		{"LeaveAction", func() error { return c.LeaveAction(ctx, weird, false) }, `LeaveAction "a b?c"|false`},
 		{"LeaveActionForce", func() error { return c.LeaveAction(ctx, "a/b", true) }, `LeaveAction "a/b"|true`},

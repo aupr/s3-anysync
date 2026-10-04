@@ -23,13 +23,23 @@ func withTriggers(o *Options) {
 	o.PollInterval = 100 * time.Millisecond
 }
 
+// rulesReq wraps rules with the action's current local version.
+func (e *testEnv) rulesReq(t *testing.T, id string, r model.Rules) api.UpdateRulesRequest {
+	t.Helper()
+	cur, err := e.m.app.Action(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return api.UpdateRulesRequest{Rules: r, ExpectedUpdatedAt: cur.UpdatedAt}
+}
+
 // newTriggeredAction is newAction with the given rules applied.
 func (e *testEnv) newTriggeredAction(t *testing.T, n int, set func(*model.Rules)) (model.Action, model.Item, string) {
 	t.Helper()
 	act, it, dir := e.newAction(t, n)
 	rules := act.Rules()
 	set(&rules)
-	updated, err := e.m.UpdateRules(ctx, act.ID, rules)
+	updated, err := e.m.UpdateRules(ctx, act.ID, e.rulesReq(t, act.ID, rules))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +122,7 @@ func TestRuleChangeRebuildsTriggers(t *testing.T) {
 	}
 	rules := act.Rules()
 	onChange(&rules)
-	if _, err := e.m.UpdateRules(ctx, act.ID, rules); err != nil {
+	if _, err := e.m.UpdateRules(ctx, act.ID, e.rulesReq(t, act.ID, rules)); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(dir, "s00.json"), []byte("now watched"), 0o644)
@@ -373,7 +383,7 @@ func TestBucketScheduleTooFastOrNeverIsPermanentError(t *testing.T) {
 			// Fixing the schedule clears the error and syncing resumes.
 			rules := act.Rules()
 			rules.Triggers.Schedule = validSchedule()
-			if _, err := e.m.UpdateRules(ctx, act.ID, rules); err != nil {
+			if _, err := e.m.UpdateRules(ctx, act.ID, e.rulesReq(t, act.ID, rules)); err != nil {
 				t.Fatal(err)
 			}
 			waitFor(t, "error cleared and sync", func() bool {
@@ -396,7 +406,7 @@ func TestFixedScheduleDoesNotOverridePause(t *testing.T) {
 	before := historyLen(t, e, act.ID)
 	rules := act.Rules()
 	rules.Triggers.Schedule = validSchedule()
-	if _, err := e.m.UpdateRules(ctx, act.ID, rules); err != nil {
+	if _, err := e.m.UpdateRules(ctx, act.ID, e.rulesReq(t, act.ID, rules)); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(500 * time.Millisecond)

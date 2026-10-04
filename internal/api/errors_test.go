@@ -25,6 +25,7 @@ func TestCodesRoundTrip(t *testing.T) {
 		storage.ErrAccessDenied:     "access-denied",
 		storage.ErrNoSuchBucket:     "no-such-bucket",
 		app.ErrInUse:                "in-use",
+		engine.ErrEditConflict:      "conflict-edit",
 		datalock.ErrBusy:            "busy",
 		state.ErrNotFound:           "not-found",
 		storage.ErrNotFound:         "not-found",
@@ -59,7 +60,7 @@ func TestCodesRoundTrip(t *testing.T) {
 func TestHTTPStatus(t *testing.T) {
 	cases := map[string]int{
 		"not-found": http.StatusNotFound, "invalid": http.StatusBadRequest, "conflict-pending": http.StatusConflict,
-		"in-use": http.StatusConflict, "locked": http.StatusConflict, "busy": http.StatusConflict, "access-denied": http.StatusForbidden,
+		"in-use": http.StatusConflict, "locked": http.StatusConflict, "busy": http.StatusConflict, "conflict-edit": http.StatusConflict, "access-denied": http.StatusForbidden,
 		"unsupported": http.StatusNotImplemented, "unavailable": http.StatusServiceUnavailable, "internal": http.StatusInternalServerError, "decrypt": http.StatusUnprocessableEntity,
 	}
 	for code, want := range cases {

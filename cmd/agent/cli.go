@@ -141,6 +141,8 @@ func explain(err error) string {
 		return "  hint: another machine is syncing this action; try again in a minute."
 	case errors.Is(err, storage.ErrLockLost):
 		return "  hint: this machine lost the cloud lock during the run (it took too long or the connection dropped); nothing is corrupted, run the sync again."
+	case errors.Is(err, engine.ErrEditConflict):
+		return "  hint: the action was changed (maybe on another machine) while you edited it; run the command again."
 	case errors.Is(err, errAgentRunning):
 		return "  hint: another agent, or a CLI command running in-process, holds this data folder; retry in a moment (stop the other agent first if it keeps running)."
 	case errors.Is(err, datalock.ErrBusy):
@@ -643,7 +645,7 @@ func (c *cli) rules(ctx context.Context, args []string) error {
 	if set["delete-guard-percent"] {
 		r.DeleteGuardPercent = *gPct
 	}
-	a, err := c.svc.UpdateRules(ctx, pos[0], r)
+	a, err := c.svc.UpdateRules(ctx, pos[0], api.UpdateRulesRequest{Rules: r, ExpectedUpdatedAt: st.Action.UpdatedAt})
 	if err != nil {
 		return err
 	}
