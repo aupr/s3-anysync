@@ -11,17 +11,24 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/app"
+	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/niceit/s3-anysync/internal/datalock"
 	"github.com/niceit/s3-anysync/internal/engine"
 	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/niceit/s3-anysync/internal/schedule"
 	"github.com/niceit/s3-anysync/internal/storage"
 )
 
 const usage = `usage: s3-anysync-agent <command> [flags] [arguments]
 
-Flags always come before arguments.
+Flags always come before arguments. When the agent is running, commands go
+through it; otherwise they run in this process.
 
+  run [--no-tray] [--verbose]          start the background agent
+  status
   machine [--name NAME]
+  settings [--log-level debug|info|warn|error]
+  autostart enable|disable|status
   profile add --name N --bucket B --access-key K [--provider P] [--endpoint URL] [--region R] [--prefix P] [--path-style]
               (secret key from S3_ANYSYNC_SECRET)
   profile list
@@ -32,14 +39,27 @@ Flags always come before arguments.
   action discover --profile ID
   action join --profile ID ACTION_ID      (passphrase from S3_ANYSYNC_PASSPHRASE for encrypted actions)
   action direction ACTION_ID two-way|local-to-cloud|cloud-to-local|default
+  action rules [--name N] [--direction D] [--on-change[=false]] [--debounce SECONDS] [--schedule SPEC] [--poll MINUTES]
+               [--propagate-deletes[=false]] [--receiver-restores-cloud[=false]] [--exclude GLOB]... [--no-excludes]
+               [--retention N] [--delete-guard-files N] [--delete-guard-percent P] ACTION_ID
+               SPEC: none | every:MINUTES | daily:HH:MM | weekly:DAY@HH:MM (DAY 0=Sunday) | cron:SPEC
+               without flags it shows the rules
+  action leave [--force] ACTION_ID
   item add --remote-name NAME --type file|dir --path LOCAL_PATH [--exclude GLOB]... ACTION_ID
   item map --path LOCAL_PATH ACTION_ID ITEM_ID
+  item unmap ACTION_ID ITEM_ID
+  item remove ACTION_ID ITEM_ID
   sync ACTION_ID
+  pause ACTION_ID
+  resume ACTION_ID
+  approve-deletes [--yes] ACTION_ID      (lists the pending deletions; --yes approves exactly the listed ones)
   snapshot ACTION_ID
   snapshots ACTION_ID
   restore --to local|cloud|both [--path P]... ACTION_ID TS
   conflicts ACTION_ID
+  diff ACTION_ID PATH
   resolve (--all local|cloud | --path P=local|cloud ...) ACTION_ID
+  history [--limit N] ACTION_ID
 
 Environment: S3_ANYSYNC_DATA_DIR overrides the data folder.
 `
@@ -50,17 +70,19 @@ func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 type cli struct {
-	app *app.App
+	svc api.Service
 	out io.Writer
 }
 
 type command func(*cli, context.Context, []string) error
 
-func run(args []string, stdout, stderr io.Writer, open func() (*app.App, error)) int {
+func run(args []string, stdout, stderr io.Writer, connect connector) int {
 	commands := map[string]command{
-		"machine": (*cli).machine, "profile": (*cli).profile, "action": (*cli).action, "item": (*cli).item,
-		"sync": (*cli).sync, "snapshot": (*cli).snapshot, "snapshots": (*cli).snapshots,
-		"restore": (*cli).restore, "conflicts": (*cli).conflicts, "resolve": (*cli).resolve,
+		"status": (*cli).status, "machine": (*cli).machine, "settings": (*cli).settings, "autostart": (*cli).autostart,
+		"profile": (*cli).profile, "action": (*cli).action, "item": (*cli).item,
+		"sync": (*cli).sync, "pause": (*cli).pause, "resume": (*cli).resume, "approve-deletes": (*cli).approveDeletes,
+		"snapshot": (*cli).snapshot, "snapshots": (*cli).snapshots, "restore": (*cli).restore,
+		"conflicts": (*cli).conflicts, "diff": (*cli).diff, "resolve": (*cli).resolve, "history": (*cli).history,
 	}
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
@@ -71,13 +93,14 @@ func run(args []string, stdout, stderr io.Writer, open func() (*app.App, error))
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
-	a, err := open()
+	ctx := context.Background()
+	svc, closeFn, err := connect(ctx)
 	if err != nil {
 		reportError(stderr, err)
 		return 1
 	}
-	defer a.Close()
-	if err := cmd(&cli{app: a, out: stdout}, context.Background(), args[1:]); err != nil {
+	defer closeFn()
+	if err := cmd(&cli{svc: svc, out: stdout}, ctx, args[1:]); err != nil {
 		reportError(stderr, err)
 		return 1
 	}
@@ -106,6 +129,8 @@ func explain(err error) string {
 		return "  hint: another machine is syncing this action; try again in a minute."
 	case errors.Is(err, storage.ErrLockLost):
 		return "  hint: this machine lost the cloud lock during the run (it took too long or the connection dropped); nothing is corrupted, run the sync again."
+	case errors.Is(err, datalock.ErrBusy):
+		return "  hint: another s3-anysync process owns the data folder; if the agent is starting or stopping, try again in a moment."
 	}
 	return ""
 }
@@ -127,18 +152,116 @@ func parseArgs(fs *flag.FlagSet, args []string, positional ...string) ([]string,
 
 func (c *cli) table() *tabwriter.Writer { return tabwriter.NewWriter(c.out, 0, 4, 2, ' ', 0) }
 
-func (c *cli) machine(_ context.Context, args []string) error {
+func when(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Local().Format("2006-01-02 15:04:05")
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+func (c *cli) status(ctx context.Context, args []string) error {
+	if _, err := parseArgs(flag.NewFlagSet("status", flag.ContinueOnError), args); err != nil {
+		return err
+	}
+	st, err := c.svc.Status(ctx)
+	if err != nil {
+		return err
+	}
+	served := "in this process (the agent is not running)"
+	if st.Agent {
+		served = "by the background agent " + st.Version
+	}
+	fmt.Fprintf(c.out, "machine: %s (%s)\nserved: %s\n", st.MachineName, st.MachineID, served)
+	w := c.table()
+	fmt.Fprintln(w, "ID\tNAME\tSTATE\tLAST RUN\tNEXT RUN\tDETAILS")
+	for _, a := range st.Actions {
+		state := a.State
+		if a.Running {
+			state += " (running)"
+		}
+		details := a.LastSummary
+		if a.LastError != "" {
+			details = "error: " + a.LastError
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Action.ID, a.Action.Name, state, when(a.LastRun), when(a.NextRun), details)
+	}
+	return w.Flush()
+}
+
+func (c *cli) machine(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("machine", flag.ContinueOnError)
 	name := fs.String("name", "", "new friendly name")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
+	s, err := c.svc.Settings(ctx)
+	if err != nil {
+		return err
+	}
 	if *name != "" {
-		if err := c.app.SetMachineName(*name); err != nil {
+		s.MachineName = *name
+		if s, err = c.svc.UpdateSettings(ctx, s); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintf(c.out, "machine id: %s\nmachine name: %s\n", c.app.MachineID, c.app.MachineName)
+	fmt.Fprintf(c.out, "machine id: %s\nmachine name: %s\n", s.MachineID, s.MachineName)
+	return nil
+}
+
+func (c *cli) settings(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
+	level := fs.String("log-level", "", "debug, info, warn or error")
+	if _, err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	s, err := c.svc.Settings(ctx)
+	if err != nil {
+		return err
+	}
+	if *level != "" {
+		s.LogLevel = *level
+		if s, err = c.svc.UpdateSettings(ctx, s); err != nil {
+			return err
+		}
+	}
+	auto := "not supported on this system"
+	if s.AutostartSupported {
+		auto = yesNo(s.Autostart)
+	}
+	fmt.Fprintf(c.out, "machine name: %s\nlog level: %s\nautostart: %s\n", s.MachineName, s.LogLevel, auto)
+	return nil
+}
+
+func (c *cli) autostart(ctx context.Context, args []string) error {
+	if len(args) != 1 {
+		return errors.New("autostart: expected enable, disable or status")
+	}
+	s, err := c.svc.Settings(ctx)
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "status":
+	case "enable", "disable":
+		s.Autostart = args[0] == "enable"
+		if s, err = c.svc.UpdateSettings(ctx, s); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("autostart: unknown subcommand %q", args[0])
+	}
+	if !s.AutostartSupported {
+		fmt.Fprintln(c.out, "autostart: not supported on this system")
+		return nil
+	}
+	fmt.Fprintf(c.out, "autostart: %s\n", yesNo(s.Autostart))
 	return nil
 }
 
@@ -168,7 +291,7 @@ func (c *cli) profile(ctx context.Context, args []string) error {
 		if secret == "" {
 			return errors.New("set S3_ANYSYNC_SECRET to the secret access key")
 		}
-		p, err := c.app.AddProfile(p, secret)
+		p, err := c.svc.AddProfile(ctx, api.AddProfileRequest{Profile: p, Secret: secret})
 		if err != nil {
 			return err
 		}
@@ -178,7 +301,7 @@ func (c *cli) profile(ctx context.Context, args []string) error {
 		if _, err := parseArgs(flag.NewFlagSet("profile list", flag.ContinueOnError), args[1:]); err != nil {
 			return err
 		}
-		profiles, err := c.app.Profiles()
+		profiles, err := c.svc.Profiles(ctx)
 		if err != nil {
 			return err
 		}
@@ -203,7 +326,7 @@ func (c *cli) profile(ctx context.Context, args []string) error {
 }
 
 func (c *cli) printProbe(ctx context.Context, id string) error {
-	res, err := c.app.TestProfile(ctx, id)
+	res, err := c.svc.TestProfile(ctx, id)
 	if err != nil {
 		return fmt.Errorf("connection test failed: %w", err)
 	}
@@ -215,9 +338,14 @@ func (c *cli) printProbe(ctx context.Context, id string) error {
 	return nil
 }
 
+func (c *cli) machineID(ctx context.Context) (string, error) {
+	s, err := c.svc.Settings(ctx)
+	return s.MachineID, err
+}
+
 func (c *cli) action(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("action: expected create, list, discover, join or direction")
+		return errors.New("action: expected create, list, discover, join, direction, rules or leave")
 	}
 	switch args[0] {
 	case "create":
@@ -231,14 +359,14 @@ func (c *cli) action(ctx context.Context, args []string) error {
 		fs.BoolVar(&a.Encrypt, "encrypt", false, "encrypt files")
 		var excludes multiFlag
 		fs.Var(&excludes, "exclude", "exclude glob (repeatable)")
-		fs.IntVar(&a.SnapshotRetention, "retention", model.DefaultSnapshotRetention, "snapshots to keep")
+		fs.IntVar(&a.SnapshotRetention, "retention", model.DefaultSnapshotRetention, "manual snapshots to keep")
 		if _, err := parseArgs(fs, args[1:]); err != nil {
 			return err
 		}
 		a.Direction = model.Direction(*dir)
 		a.PropagateDeletes = !*noDel
 		a.Excludes = excludes
-		created, err := c.app.CreateAction(ctx, *profile, a, os.Getenv("S3_ANYSYNC_PASSPHRASE"))
+		created, err := c.svc.CreateAction(ctx, api.CreateActionRequest{ProfileID: *profile, Action: a, Passphrase: os.Getenv("S3_ANYSYNC_PASSPHRASE")})
 		if err != nil {
 			return err
 		}
@@ -248,14 +376,19 @@ func (c *cli) action(ctx context.Context, args []string) error {
 		if _, err := parseArgs(flag.NewFlagSet("action list", flag.ContinueOnError), args[1:]); err != nil {
 			return err
 		}
-		actions, err := c.app.Actions()
+		mid, err := c.machineID(ctx)
+		if err != nil {
+			return err
+		}
+		actions, err := c.svc.Actions(ctx)
 		if err != nil {
 			return err
 		}
 		w := c.table()
-		fmt.Fprintln(w, "ID\tNAME\tDIRECTION (THIS MACHINE)\tITEMS\tENCRYPTED")
-		for _, a := range actions {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%v\n", a.ID, a.Name, a.DirectionFor(c.app.MachineID), len(a.Items), a.Encrypt)
+		fmt.Fprintln(w, "ID\tNAME\tDIRECTION (THIS MACHINE)\tITEMS\tENCRYPTED\tSTATE")
+		for _, st := range actions {
+			a := st.Action
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%v\t%s\n", a.ID, a.Name, a.DirectionFor(mid), len(a.Items), a.Encrypt, st.State)
 		}
 		return w.Flush()
 	case "discover":
@@ -264,15 +397,22 @@ func (c *cli) action(ctx context.Context, args []string) error {
 		if _, err := parseArgs(fs, args[1:]); err != nil {
 			return err
 		}
-		found, err := c.app.Discover(ctx, *profile)
+		found, err := c.svc.Discover(ctx, *profile)
 		if err != nil {
 			return err
+		}
+		local, err := c.svc.Actions(ctx)
+		if err != nil {
+			return err
+		}
+		joined := map[string]bool{}
+		for _, st := range local {
+			joined[st.Action.ID] = true
 		}
 		w := c.table()
 		fmt.Fprintln(w, "ID\tNAME\tITEMS\tJOINED")
 		for _, a := range found {
-			_, err := c.app.DB.GetAction(a.ID)
-			fmt.Fprintf(w, "%s\t%s\t%d\t%v\n", a.ID, a.Name, len(a.Items), err == nil)
+			fmt.Fprintf(w, "%s\t%s\t%d\t%v\n", a.ID, a.Name, len(a.Items), joined[a.ID])
 		}
 		return w.Flush()
 	case "join":
@@ -282,7 +422,11 @@ func (c *cli) action(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		a, err := c.app.Join(ctx, *profile, pos[0], os.Getenv("S3_ANYSYNC_PASSPHRASE"))
+		a, err := c.svc.JoinAction(ctx, api.JoinActionRequest{ProfileID: *profile, ActionID: pos[0], Passphrase: os.Getenv("S3_ANYSYNC_PASSPHRASE")})
+		if err != nil {
+			return err
+		}
+		mid, err := c.machineID(ctx)
 		if err != nil {
 			return err
 		}
@@ -290,7 +434,7 @@ func (c *cli) action(ctx context.Context, args []string) error {
 		w := c.table()
 		fmt.Fprintln(w, "ITEM_ID\tREMOTE NAME\tTYPE\tLOCAL PATH")
 		for _, it := range a.Items {
-			local := it.LocalPaths[c.app.MachineID]
+			local := it.LocalPaths[mid]
 			if local == "" {
 				local = "not mapped on this machine (use: item map)"
 			}
@@ -306,18 +450,137 @@ func (c *cli) action(ctx context.Context, args []string) error {
 		if pos[1] == "default" {
 			d = ""
 		}
-		if err := c.app.SetMachineDirection(ctx, pos[0], d); err != nil {
+		if err := c.svc.SetMachineDirection(ctx, pos[0], d); err != nil {
 			return err
 		}
 		fmt.Fprintln(c.out, "direction updated")
+		return nil
+	case "rules":
+		return c.rules(ctx, args[1:])
+	case "leave":
+		fs := flag.NewFlagSet("action leave", flag.ContinueOnError)
+		force := fs.Bool("force", false, "leave locally even if the bucket cannot be updated")
+		pos, err := parseArgs(fs, args[1:], "ACTION_ID")
+		if err != nil {
+			return err
+		}
+		if err := c.svc.LeaveAction(ctx, pos[0], *force); err != nil {
+			return err
+		}
+		fmt.Fprintf(c.out, "left action: %s (local files and the cloud copy were kept)\n", pos[0])
 		return nil
 	}
 	return fmt.Errorf("action: unknown subcommand %q", args[0])
 }
 
+func (c *cli) rules(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("action rules", flag.ContinueOnError)
+	name := fs.String("name", "", "action name")
+	dir := fs.String("direction", "", "default direction")
+	onChange := fs.Bool("on-change", false, "sync when local files change")
+	debounce := fs.Int("debounce", 0, "seconds to wait for changes to settle")
+	sched := fs.String("schedule", "", "none | every:MINUTES | daily:HH:MM | weekly:DAY@HH:MM | cron:SPEC")
+	poll := fs.Int("poll", 0, "minutes between cloud checks (on-change without schedule)")
+	prop := fs.Bool("propagate-deletes", true, "copy deletions to the other side")
+	recv := fs.Bool("receiver-restores-cloud", false, "cloud-to-local machines upload files the cloud deleted (when deletions are not copied)")
+	var excludes multiFlag
+	fs.Var(&excludes, "exclude", "exclude glob (repeatable; replaces the list)")
+	noEx := fs.Bool("no-excludes", false, "clear the exclude list")
+	ret := fs.Int("retention", 0, "manual snapshots to keep")
+	gFiles := fs.Int("delete-guard-files", 0, "delete guard: minimum files")
+	gPct := fs.Int("delete-guard-percent", 0, "delete guard: minimum percent of synced files")
+	pos, err := parseArgs(fs, args, "ACTION_ID")
+	if err != nil {
+		return err
+	}
+	st, err := c.svc.Action(ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if len(set) == 0 {
+		c.printRules(st.Action)
+		return nil
+	}
+	if set["exclude"] && *noEx {
+		return errors.New("action rules: use either --exclude or --no-excludes")
+	}
+	r := st.Action.Rules()
+	if set["name"] {
+		r.Name = *name
+	}
+	if set["direction"] {
+		r.Direction = model.Direction(*dir)
+	}
+	if set["on-change"] {
+		r.Triggers.OnChange = *onChange
+	}
+	if set["debounce"] {
+		r.Triggers.DebounceSeconds = *debounce
+	}
+	if set["schedule"] {
+		s, err := parseSchedule(*sched)
+		if err != nil {
+			return err
+		}
+		r.Triggers.Schedule = s
+	}
+	if set["poll"] {
+		r.Triggers.RemotePollMinutes = *poll
+	}
+	if set["propagate-deletes"] {
+		r.PropagateDeletes = *prop
+	}
+	if set["receiver-restores-cloud"] {
+		r.ReceiverRestoresCloud = *recv
+	}
+	if set["exclude"] {
+		r.Excludes = excludes
+	}
+	if *noEx {
+		r.Excludes = nil
+	}
+	if set["retention"] {
+		r.SnapshotRetention = *ret
+	}
+	if set["delete-guard-files"] {
+		r.DeleteGuardMinFiles = *gFiles
+	}
+	if set["delete-guard-percent"] {
+		r.DeleteGuardPercent = *gPct
+	}
+	a, err := c.svc.UpdateRules(ctx, pos[0], r)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(c.out, "rules updated")
+	c.printRules(a)
+	return nil
+}
+
+func (c *cli) printRules(a model.Action) {
+	ex := "none"
+	if len(a.Excludes) > 0 {
+		ex = strings.Join(a.Excludes, ", ")
+	}
+	fmt.Fprintf(c.out, "name: %s\ndirection: %s\non change: %s (debounce %ds)\nschedule: %s\n",
+		a.Name, a.Direction, yesNo(a.Triggers.OnChange), a.Triggers.DebounceSeconds, describeSchedule(a.Triggers.Schedule))
+	if runs, err := schedule.NextRuns(a.Triggers.Schedule, time.Now(), 3); err == nil && len(runs) > 0 {
+		var s []string
+		for _, r := range runs {
+			s = append(s, r.Format("2006-01-02 15:04"))
+		}
+		fmt.Fprintf(c.out, "next runs: %s\n", strings.Join(s, ", "))
+	}
+	fmt.Fprintf(c.out, "cloud check: every %d minute(s)\npropagate deletes: %s\nreceiver restores cloud: %s\nexcludes: %s\nmanual snapshots kept: %d\ndelete guard: %d file(s) and %d%%\n",
+		a.Triggers.RemotePollMinutes, yesNo(a.PropagateDeletes), yesNo(a.ReceiverRestoresCloud), ex,
+		a.SnapshotRetention, a.DeleteGuardMinFiles, a.DeleteGuardPercent)
+}
+
 func (c *cli) item(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("item: expected add or map")
+		return errors.New("item: expected add, map, unmap or remove")
 	}
 	switch args[0] {
 	case "add":
@@ -337,7 +600,7 @@ func (c *cli) item(ctx context.Context, args []string) error {
 		}
 		it.Type = model.ItemType(*typ)
 		it.Excludes = excludes
-		added, err := c.app.AddItem(ctx, pos[0], it, *local)
+		added, err := c.svc.AddItem(ctx, pos[0], api.AddItemRequest{Item: it, LocalPath: *local})
 		if err != nil {
 			return err
 		}
@@ -350,23 +613,38 @@ func (c *cli) item(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := c.app.MapItem(ctx, pos[0], pos[1], *local); err != nil {
+		if err := c.svc.MapItem(ctx, pos[0], pos[1], *local); err != nil {
 			return err
 		}
 		fmt.Fprintln(c.out, "item mapped")
+		return nil
+	case "unmap":
+		pos, err := parseArgs(flag.NewFlagSet("item unmap", flag.ContinueOnError), args[1:], "ACTION_ID", "ITEM_ID")
+		if err != nil {
+			return err
+		}
+		if err := c.svc.UnmapItem(ctx, pos[0], pos[1]); err != nil {
+			return err
+		}
+		fmt.Fprintln(c.out, "item unmapped on this machine (its files stay where they are)")
+		return nil
+	case "remove":
+		pos, err := parseArgs(flag.NewFlagSet("item remove", flag.ContinueOnError), args[1:], "ACTION_ID", "ITEM_ID")
+		if err != nil {
+			return err
+		}
+		if err := c.svc.RemoveItem(ctx, pos[0], pos[1]); err != nil {
+			return err
+		}
+		fmt.Fprintln(c.out, "item removed from the action on every machine (files stay where they are)")
 		return nil
 	}
 	return fmt.Errorf("item: unknown subcommand %q", args[0])
 }
 
-// runner parses a command that takes exactly ACTION_ID (plus flags in fs).
-func (c *cli) runner(fs *flag.FlagSet, args []string, extra ...string) (*engine.Runner, []string, error) {
-	pos, err := parseArgs(fs, args, append([]string{"ACTION_ID"}, extra...)...)
-	if err != nil {
-		return nil, nil, err
-	}
-	r, err := c.app.Runner(pos[0])
-	return r, pos, err
+// actionArg parses a command whose only argument is ACTION_ID (plus extras).
+func actionArg(fs *flag.FlagSet, args []string, extra ...string) ([]string, error) {
+	return parseArgs(fs, args, append([]string{"ACTION_ID"}, extra...)...)
 }
 
 func (c *cli) printResult(res model.SyncResult) {
@@ -376,6 +654,15 @@ func (c *cli) printResult(res model.SyncResult) {
 	}
 	for _, p := range res.Deferred {
 		fmt.Fprintf(c.out, "  deferred (changed during sync, will be re-planned): %s\n", p)
+	}
+	for _, p := range res.PendingDeletes {
+		fmt.Fprintf(c.out, "  pending deletion: %s\n", p)
+	}
+	if res.Outcome == model.OutcomeDeletesPending {
+		fmt.Fprintln(c.out, "These deletions are held back by the delete guard. Check them (approve-deletes ACTION_ID), then approve with --yes (or restore the files).")
+	}
+	for _, p := range res.Unsupported {
+		fmt.Fprintf(c.out, "  not synced here (name not allowed on this system): %s\n", p)
 	}
 }
 
@@ -388,11 +675,65 @@ func (c *cli) printConflictHint(list []model.Conflict) {
 }
 
 func (c *cli) sync(ctx context.Context, args []string) error {
-	r, _, err := c.runner(flag.NewFlagSet("sync", flag.ContinueOnError), args)
+	pos, err := actionArg(flag.NewFlagSet("sync", flag.ContinueOnError), args)
 	if err != nil {
 		return err
 	}
-	res, err := r.Sync(ctx)
+	res, err := c.svc.Sync(ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	c.printResult(res)
+	return nil
+}
+
+func (c *cli) pause(ctx context.Context, args []string) error {
+	pos, err := actionArg(flag.NewFlagSet("pause", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	if err := c.svc.Pause(ctx, pos[0]); err != nil {
+		return err
+	}
+	fmt.Fprintln(c.out, "paused (automatic syncs stop until resume; manual commands still work)")
+	return nil
+}
+
+func (c *cli) resume(ctx context.Context, args []string) error {
+	pos, err := actionArg(flag.NewFlagSet("resume", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	if err := c.svc.Resume(ctx, pos[0]); err != nil {
+		return err
+	}
+	fmt.Fprintln(c.out, "resumed")
+	return nil
+}
+
+func (c *cli) approveDeletes(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("approve-deletes", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "approve exactly the deletions listed now")
+	pos, err := actionArg(fs, args)
+	if err != nil {
+		return err
+	}
+	p, err := c.svc.PendingDeletes(ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		fmt.Fprintln(c.out, "no deletions are waiting for approval")
+		return nil
+	}
+	for _, x := range p.Paths {
+		fmt.Fprintf(c.out, "  pending deletion: %s\n", x)
+	}
+	if !*yes {
+		fmt.Fprintf(c.out, "To approve exactly these %d deletion(s): approve-deletes --yes %s\n", len(p.Paths), pos[0])
+		return nil
+	}
+	res, err := c.svc.ApproveDeletes(ctx, pos[0], p.Paths)
 	if err != nil {
 		return err
 	}
@@ -401,11 +742,11 @@ func (c *cli) sync(ctx context.Context, args []string) error {
 }
 
 func (c *cli) snapshot(ctx context.Context, args []string) error {
-	r, _, err := c.runner(flag.NewFlagSet("snapshot", flag.ContinueOnError), args)
+	pos, err := actionArg(flag.NewFlagSet("snapshot", flag.ContinueOnError), args)
 	if err != nil {
 		return err
 	}
-	info, err := r.Snapshot(ctx)
+	info, err := c.svc.Snapshot(ctx, pos[0])
 	if err != nil {
 		return err
 	}
@@ -413,16 +754,25 @@ func (c *cli) snapshot(ctx context.Context, args []string) error {
 	return nil
 }
 
+// machines returns the action's machine names (for display).
+func (c *cli) machines(ctx context.Context, id string) map[string]string {
+	st, err := c.svc.Action(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return st.Action.Machines
+}
+
 func (c *cli) snapshots(ctx context.Context, args []string) error {
-	r, _, err := c.runner(flag.NewFlagSet("snapshots", flag.ContinueOnError), args)
+	pos, err := actionArg(flag.NewFlagSet("snapshots", flag.ContinueOnError), args)
 	if err != nil {
 		return err
 	}
-	list, err := r.ListSnapshots(ctx)
+	list, err := c.svc.Snapshots(ctx, pos[0])
 	if err != nil {
 		return err
 	}
-	machines := r.Action().Machines
+	machines := c.machines(ctx, pos[0])
 	w := c.table()
 	fmt.Fprintln(w, "TS\tREASON\tMACHINE\tFILES")
 	for _, s := range list {
@@ -436,19 +786,20 @@ func (c *cli) restore(ctx context.Context, args []string) error {
 	to := fs.String("to", "", "local, cloud or both")
 	var only multiFlag
 	fs.Var(&only, "path", "restore only this remote path (repeatable)")
-	r, pos, err := c.runner(fs, args, "TS")
+	pos, err := actionArg(fs, args, "TS")
 	if err != nil {
 		return err
 	}
-	if t := engine.RestoreTarget(*to); t != engine.RestoreLocal && t != engine.RestoreCloud && t != engine.RestoreBoth {
+	target := engine.RestoreTarget(*to)
+	if target != engine.RestoreLocal && target != engine.RestoreCloud && target != engine.RestoreBoth {
 		return fmt.Errorf("restore: --to must be local, cloud or both (got %q)", *to)
 	}
-	res, err := r.Restore(ctx, pos[1], only, engine.RestoreTarget(*to))
+	res, err := c.svc.Restore(ctx, pos[0], api.RestoreRequest{TS: pos[1], Paths: only, To: target})
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(c.out, "restored %d file(s)\n", len(res.Restored))
-	if engine.RestoreTarget(*to) == engine.RestoreLocal {
+	if target == engine.RestoreLocal {
 		fmt.Fprintln(c.out, "note: restored locally only; a two-way machine will upload these files again at the next sync, and a cloud-to-local machine will re-download the cloud version.")
 	}
 	for _, p := range res.SkippedUnmapped {
@@ -457,16 +808,16 @@ func (c *cli) restore(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (c *cli) conflicts(_ context.Context, args []string) error {
-	r, _, err := c.runner(flag.NewFlagSet("conflicts", flag.ContinueOnError), args)
+func (c *cli) conflicts(ctx context.Context, args []string) error {
+	pos, err := actionArg(flag.NewFlagSet("conflicts", flag.ContinueOnError), args)
 	if err != nil {
 		return err
 	}
-	list, err := r.Conflicts()
+	list, err := c.svc.Conflicts(ctx, pos[0])
 	if err != nil {
 		return err
 	}
-	machines := r.Action().Machines
+	machines := c.machines(ctx, pos[0])
 	w := c.table()
 	fmt.Fprintln(w, "PATH\tLOCAL\tCLOUD\tCLOUD WRITTEN BY")
 	for _, cf := range list {
@@ -479,18 +830,38 @@ func (c *cli) conflicts(_ context.Context, args []string) error {
 	return w.Flush()
 }
 
+func (c *cli) diff(ctx context.Context, args []string) error {
+	pos, err := actionArg(flag.NewFlagSet("diff", flag.ContinueOnError), args, "PATH")
+	if err != nil {
+		return err
+	}
+	d, err := c.svc.ConflictDetail(ctx, pos[0], pos[1])
+	if err != nil {
+		return err
+	}
+	switch {
+	case d.TooLarge:
+		fmt.Fprintln(c.out, "a side is larger than 1 MiB; no text shown")
+	case d.Binary:
+		fmt.Fprintln(c.out, "binary content; no text shown")
+	default:
+		fmt.Fprintf(c.out, "--- this machine (%s)\n%s\n+++ cloud (%s)\n%s\n", describe(d.Conflict.Local), d.LocalText, describe(d.Conflict.Remote), d.RemoteText)
+	}
+	return nil
+}
+
 func (c *cli) resolve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	all := fs.String("all", "", "resolve every conflict: local or cloud")
 	var each multiFlag
 	fs.Var(&each, "path", "PATH=local|cloud (repeatable)")
-	r, _, err := c.runner(fs, args)
+	pos, err := actionArg(fs, args)
 	if err != nil {
 		return err
 	}
 	choices := map[string]model.Side{}
 	if *all != "" {
-		list, err := r.Conflicts()
+		list, err := c.svc.Conflicts(ctx, pos[0])
 		if err != nil {
 			return err
 		}
@@ -508,7 +879,7 @@ func (c *cli) resolve(ctx context.Context, args []string) error {
 	if *all == "" && len(each) == 0 {
 		return errors.New("nothing to resolve: pass --all local|cloud or --path PATH=local|cloud")
 	}
-	res, err := r.Resolve(ctx, choices)
+	res, err := c.svc.Resolve(ctx, pos[0], choices)
 	if err != nil {
 		return err
 	}
@@ -517,6 +888,25 @@ func (c *cli) resolve(ctx context.Context, args []string) error {
 		c.printConflictHint(res.Conflicts)
 	}
 	return nil
+}
+
+func (c *cli) history(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("history", flag.ContinueOnError)
+	limit := fs.Int("limit", 20, "entries to show")
+	pos, err := actionArg(fs, args)
+	if err != nil {
+		return err
+	}
+	list, err := c.svc.History(ctx, pos[0], *limit)
+	if err != nil {
+		return err
+	}
+	w := c.table()
+	fmt.Fprintln(w, "STARTED\tKIND\tOUTCOME\tDETAILS")
+	for _, h := range list {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", when(h.StartedAt), h.Kind, h.Outcome, h.Message)
+	}
+	return w.Flush()
 }
 
 func describe(e *model.FileEntry) string {

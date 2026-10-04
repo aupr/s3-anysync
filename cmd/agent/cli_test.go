@@ -2,14 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/niceit/s3-anysync/internal/api"
 	"github.com/niceit/s3-anysync/internal/app"
 	"github.com/niceit/s3-anysync/internal/engine"
 	"github.com/niceit/s3-anysync/internal/model"
@@ -17,21 +18,19 @@ import (
 	"github.com/niceit/s3-anysync/internal/storage"
 )
 
-// opener simulates one machine: its own data dir and secrets, a shared bucket.
-func opener(t *testing.T, store *storage.Memory) func() (*app.App, error) {
+// opener simulates one machine in the CLI's in-process mode: its own data
+// dir and secrets, sharing one bucket with the other machines.
+func opener(t *testing.T, store storage.Storage) connector {
 	dir, sec := t.TempDir(), secrets.NewMemory()
-	return func() (*app.App, error) {
-		a, err := app.Open(dir, sec, slog.New(slog.DiscardHandler))
-		if err != nil {
-			return nil, err
-		}
-		a.NewStorage = func(model.Profile, string) (storage.Storage, error) { return store, nil }
-		a.LockSettle = 0
-		return a, nil
+	return func(ctx context.Context) (api.Service, func(), error) {
+		return connectTo(ctx, dir, sec, nil, func(a *app.App) {
+			a.NewStorage = func(model.Profile, string) (storage.Storage, error) { return store, nil }
+			a.LockSettle = 0
+		})
 	}
 }
 
-func runOK(t *testing.T, open func() (*app.App, error), args ...string) string {
+func runOK(t *testing.T, open connector, args ...string) string {
 	t.Helper()
 	var out, errb bytes.Buffer
 	if code := run(args, &out, &errb, open); code != 0 {
@@ -170,7 +169,9 @@ func TestExplain(t *testing.T) {
 
 func TestRunPrintsExplanation(t *testing.T) {
 	var out, errb bytes.Buffer
-	open := func() (*app.App, error) { return nil, fmt.Errorf("open: %w", storage.ErrLocked) }
+	open := func(context.Context) (api.Service, func(), error) {
+		return nil, nil, fmt.Errorf("open: %w", storage.ErrLocked)
+	}
 	if code := run([]string{"machine"}, &out, &errb, open); code != 1 || !strings.Contains(errb.String(), "try again in a minute") {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
@@ -181,17 +182,8 @@ func TestCLIReceiverRestoresCloudFlag(t *testing.T) {
 	open := opener(t, storage.NewMemory())
 	p := valueAfter(t, runOK(t, open, "profile", "add", "--name", "t", "--bucket", "b", "--access-key", "k"), "profile created")
 	act := valueAfter(t, runOK(t, open, "action", "create", "--profile", p, "--name", "A", "--no-propagate-deletes", "--receiver-restores-cloud"), "action created")
-	a, err := open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
-	got, err := a.DB.GetAction(act)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.ReceiverRestoresCloud || got.PropagateDeletes {
-		t.Fatalf("flags not stored: %+v", got)
+	if out := runOK(t, open, "action", "rules", act); !strings.Contains(out, "receiver restores cloud: yes") || !strings.Contains(out, "propagate deletes: no") {
+		t.Fatalf("flags not stored:\n%s", out)
 	}
 }
 
@@ -265,7 +257,7 @@ func readFile(t *testing.T, p string) string {
 	return string(d)
 }
 
-func runFail(t *testing.T, open func() (*app.App, error), args ...string) string {
+func runFail(t *testing.T, open connector, args ...string) string {
 	t.Helper()
 	var out, errb bytes.Buffer
 	if code := run(args, &out, &errb, open); code != 1 {
