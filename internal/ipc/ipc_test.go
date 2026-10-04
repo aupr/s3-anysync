@@ -153,9 +153,14 @@ func TestSecretsNeverInResponses(t *testing.T) {
 	if _, err := c.AddProfile(ctx, api.AddProfileRequest{Profile: model.Profile{Name: "p", Bucket: "b", AccessKeyID: "k"}, Secret: "s3cr3t-value"}); err != nil {
 		t.Fatal(err)
 	}
-	body := rawGet(t, dir, tok, "/profiles")
-	if strings.Contains(body, "s3cr3t-value") {
-		t.Fatalf("secret in response: %s", body)
+	for _, path := range []string{"/profiles", "/status", "/actions", "/settings"} {
+		if body := rawGet(t, dir, tok, path); strings.Contains(body, "s3cr3t-value") {
+			t.Fatalf("secret in GET %s: %s", path, body)
+		}
+	}
+	// Error bodies carry no secret either.
+	if body := rawGet(t, dir, tok, "/actions/nope"); !strings.HasPrefix(body, "404") || strings.Contains(body, "s3cr3t-value") {
+		t.Fatalf("error response: %s", body)
 	}
 }
 

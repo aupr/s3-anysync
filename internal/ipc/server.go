@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -39,7 +40,12 @@ func NewServer(svc api.Service, token string, log *slog.Logger) *Server {
 	}
 	s := &Server{svc: svc, token: token, log: log}
 	s.base, s.stopStream = context.WithCancel(context.Background())
-	s.hs = &http.Server{Handler: s.routes(), ReadHeaderTimeout: 10 * time.Second}
+	s.hs = &http.Server{
+		Handler:           s.recoverer(s.routes()),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
 	return s
 }
 
@@ -51,8 +57,8 @@ func (s *Server) Serve(l net.Listener) error { return s.hs.Serve(l) }
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.stopStream()
 	err := s.hs.Shutdown(ctx)
-	if errors.Is(err, context.DeadlineExceeded) {
-		return s.hs.Close()
+	if err != nil {
+		s.hs.Close() // force the remaining connections closed
 	}
 	return err
 }
@@ -63,7 +69,13 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	h := func(pattern string, fn handlerFunc) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 			v, err := fn(r)
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, api.RemoteError{Code: "invalid", Message: err.Error()})
+				return
+			}
 			writeResult(w, v, err)
 		})
 	}
@@ -192,10 +204,27 @@ func (s *Server) routes() http.Handler {
 	return s.auth(mux)
 }
 
+// recoverer turns a panic in a handler into a logged 500.
+func (s *Server) recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				if v == http.ErrAbortHandler {
+					panic(v)
+				}
+				s.log.Error("ipc: handler panic", "path", r.URL.Path, "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+				writeJSON(w, http.StatusInternalServerError, api.RemoteError{Code: "internal", Message: "internal error"})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) auth(next http.Handler) http.Handler {
 	want := []byte("Bearer " + s.token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+		// An empty token means "not configured": nothing is accepted.
+		if s.token == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
 			writeJSON(w, http.StatusUnauthorized, api.RemoteError{Code: "unauthorized", Message: "missing or wrong IPC token"})
 			return
 		}
@@ -243,11 +272,29 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+const maxBody = 1 << 20
+
+// decode reads exactly one JSON value (unknown fields are tolerated). A body
+// over maxBody yields *http.MaxBytesError, which the route wrapper maps to 413.
 func decode(r *http.Request, v any) error {
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v); err != nil {
-		return fmt.Errorf("%w: %v", api.ErrInvalid, err)
+	dec := json.NewDecoder(r.Body)
+	err := dec.Decode(v)
+	if err == nil {
+		if _, e := dec.Token(); e != io.EOF {
+			err = e
+			if err == nil {
+				err = errors.New("unexpected data after the JSON value")
+			}
+		}
 	}
-	return nil
+	if err == nil {
+		return nil
+	}
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", api.ErrInvalid, err)
 }
 
 func writeResult(w http.ResponseWriter, v any, err error) {

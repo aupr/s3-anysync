@@ -3,6 +3,8 @@ package ipc
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +20,20 @@ func NewToken(dataDir string) (string, error) {
 	tok := hex.EncodeToString(b)
 	p := filepath.Join(dataDir, tokenFile)
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, []byte(tok), 0o600); err != nil {
+	// A stale temp file could have looser permissions: always start fresh.
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	_, err = f.WriteString(tok)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
 		return "", err
 	}
 	if err := os.Rename(tmp, p); err != nil {

@@ -20,6 +20,11 @@ import (
 )
 
 // Client is api.Service over IPC.
+//
+// Cancelling the ctx of a call cancels the server-side job too, exactly as it
+// does in-process. A wrong or missing token yields a *api.RemoteError with
+// Code "unauthorized"; callers (the CLI) should check that code rather than
+// use errors.Is, as it stands for no sentinel error.
 type Client struct {
 	hc    *http.Client
 	token string
