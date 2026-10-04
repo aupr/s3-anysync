@@ -40,7 +40,7 @@ export function scheduleFor(p: Preset, cur: Schedule): Schedule {
     case 'daily':
       return { kind: 'daily', at: cur.at ?? '09:00' }
     case 'weekly':
-      return { kind: 'weekly', weekday: cur.weekday ?? 1, at: cur.at ?? '09:00' }
+      return { kind: 'weekly', weekday: cur.weekday ?? (cur.kind === 'weekly' ? 0 : 1), at: cur.at ?? '09:00' }
     case 'cron':
       return { kind: 'cron', cron: cur.cron ?? '0 * * * *' }
   }

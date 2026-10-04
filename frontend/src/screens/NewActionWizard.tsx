@@ -34,6 +34,7 @@ export function NewActionWizard({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const alive = useRef(true)
+  const checkSeq = useRef(0)
   useEffect(() => {
     alive.current = true
     return () => { alive.current = false }
@@ -49,9 +50,19 @@ export function NewActionWizard({ onClose }: { onClose: () => void }) {
     )
   }
 
-  const next = () => {
+  const next = async () => {
     setError('')
     if (step === 1 && !name.trim()) return setError('Give the action a name.')
+    if (step === 1 && schedule.kind !== 'none') {
+      const seq = ++checkSeq.current
+      try {
+        await api.previewSchedule(schedule)
+      } catch (e) {
+        if (alive.current && seq === checkSeq.current) setError(describeError(e).message)
+        return
+      }
+      if (!alive.current || seq !== checkSeq.current) return
+    }
     if (step === 2 && encrypt && (pass.length < 8 || pass !== pass2)) return setError('The passphrase must have at least 8 characters and both entries must match.')
     setStep(step + 1)
   }
@@ -71,7 +82,7 @@ export function NewActionWizard({ onClose }: { onClose: () => void }) {
     try {
       const act = await api.createAction({
         profileId,
-        action: { name: name.trim(), direction, propagateDeletes: true, triggers: { onChange, debounceSeconds: 0, schedule, remotePollMinutes: 0 } },
+        action: { name: name.trim(), direction, propagateDeletes: true, ...(encrypt ? { encrypt: true } : {}), triggers: { onChange, debounceSeconds: 0, schedule, remotePollMinutes: 0 } },
         passphrase: encrypt ? pass : undefined,
       })
       const failed: string[] = []

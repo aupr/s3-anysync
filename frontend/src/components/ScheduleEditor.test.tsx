@@ -50,3 +50,10 @@ test('a stale preview response is ignored', async () => {
   await new Promise((r) => setTimeout(r, 20))
   expect(screen.queryByText(/1999|1998/)).toBeNull()
 })
+
+test('a weekly schedule without a weekday shows Sunday', async () => {
+  bindings.PreviewSchedule.mockResolvedValue([])
+  render(<Host initial={{ kind: 'weekly', at: '07:30' }} />)
+  expect((screen.getByLabelText('Day') as HTMLSelectElement).value).toBe('0')
+  expect(screen.getByLabelText('Time (24h, HH:MM)')).toHaveValue('07:30')
+})

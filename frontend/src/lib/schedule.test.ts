@@ -11,3 +11,8 @@ test('presets round-trip', () => {
   expect(scheduleFor('cron', { kind: 'none' })).toEqual({ kind: 'cron', cron: '0 * * * *' })
   expect(scheduleFor('every15', { kind: 'daily', at: '09:00' })).toEqual({ kind: 'interval', everyMinutes: 15 })
 })
+
+test('a weekly schedule without a weekday is Sunday', () => {
+  expect(scheduleFor('weekly', { kind: 'weekly', at: '07:30' })).toEqual({ kind: 'weekly', weekday: 0, at: '07:30' })
+  expect(scheduleFor('weekly', { kind: 'daily', at: '07:30' })).toEqual({ kind: 'weekly', weekday: 1, at: '07:30' })
+})

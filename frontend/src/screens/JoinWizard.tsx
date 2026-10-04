@@ -34,9 +34,10 @@ export function JoinWizard({ onClose }: { onClose: () => void }) {
     const seq = ++findSeq.current
     setError('')
     setFinding(true)
+    setPass('')
     try {
       const list = (await api.discover(profileId)).filter((a) => !state.actions[a.id])
-      if (alive.current && seq === findSeq.current) setFound(list)
+      if (alive.current && seq === findSeq.current) { setFound(list); setChosen((c) => (c && list.some((a) => a.id === c.id) ? c : null)) }
     } catch (e) {
       if (alive.current && seq === findSeq.current) setError(describeError(e).message)
     } finally {
@@ -83,9 +84,17 @@ export function JoinWizard({ onClose }: { onClose: () => void }) {
     navigate({ name: 'action', id: joined.id, tab: 'items' })
   }
 
+  // Closing the map step still leaves the action joined, so go to its Items tab.
+  const closeMap = () => {
+    if (busy || !joined) return
+    toast.show('Joined. Map the items on the Items tab to start syncing here.')
+    onClose()
+    navigate({ name: 'action', id: joined.id, tab: 'items' })
+  }
+
   if (joined) {
     return (
-      <Modal title={`Map ${joined.name} on this machine`} onClose={close} footer={<Button variant="primary" disabled={busy} onClick={finish}>Finish</Button>}>
+      <Modal title={`Map ${joined.name} on this machine`} onClose={closeMap} footer={<Button variant="primary" disabled={busy} onClick={finish}>Finish</Button>}>
         <p className="mb-2 text-sm text-zinc-500">Choose where each item lives on this machine. Items you skip are not synced here.</p>
         {(joined.items ?? []).map((it) => (
           <div key={it.id} className="mb-2 rounded border border-zinc-200 p-2 text-sm dark:border-zinc-700">
@@ -113,7 +122,7 @@ export function JoinWizard({ onClose }: { onClose: () => void }) {
         {state.profiles.length === 0 && <p className="text-sm text-zinc-500">Create a profile (a bucket connection) first.</p>}
         <div className="flex items-end gap-2">
           <Field label="Profile">
-            <Select aria-label="Profile" value={profileId} disabled={busy} onChange={(e) => { findSeq.current++; setProfileId(e.target.value); setFound(null); setChosen(null); setFinding(false); setError('') }}>
+            <Select aria-label="Profile" value={profileId} disabled={busy} onChange={(e) => { findSeq.current++; setProfileId(e.target.value); setFound(null); setChosen(null); setPass(''); setFinding(false); setError('') }}>
               {state.profiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </Select>
           </Field>
@@ -122,7 +131,7 @@ export function JoinWizard({ onClose }: { onClose: () => void }) {
         {found && found.length === 0 && <p className="text-sm text-zinc-500">No actions to join in this bucket.</p>}
         {found?.map((a) => (
           <label key={a.id} className="flex items-start gap-2 text-sm">
-            <input type="radio" name="join" checked={chosen?.id === a.id} disabled={busy} onChange={() => setChosen(a)} />
+            <input type="radio" name="join" checked={chosen?.id === a.id} disabled={busy} onChange={() => { if (chosen?.id !== a.id) setPass(''); setChosen(a) }} />
             <span>
               <span className="font-medium">{a.name}</span>
               <span className="block text-xs text-zinc-500">

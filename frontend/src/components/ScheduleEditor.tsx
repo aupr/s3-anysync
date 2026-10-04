@@ -40,14 +40,14 @@ export function ScheduleEditor({ value, onChange }: { value: Schedule; onChange:
       )}
       {preset === 'weekly' && (
         <Field label="Day">
-          <Select aria-label="Day" value={value.weekday ?? 1} onChange={(e) => onChange({ ...value, weekday: Number(e.target.value) })}>
+          <Select aria-label="Day" value={value.weekday ?? 0} onChange={(e) => onChange({ ...value, weekday: Number(e.target.value) })}>
             {weekdays.map((d, i) => <option key={d} value={i}>{d}</option>)}
           </Select>
         </Field>
       )}
       {(preset === 'daily' || preset === 'weekly') && (
         <Field label="Time (24h, HH:MM)">
-          <Input aria-label="Time" value={value.at ?? ''} onChange={(e) => onChange({ ...value, at: e.target.value })} />
+          <Input aria-label="Time (24h, HH:MM)" value={value.at ?? ''} onChange={(e) => onChange({ ...value, at: e.target.value })} />
         </Field>
       )}
       {preset === 'cron' && (
