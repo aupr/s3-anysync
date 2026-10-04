@@ -3,7 +3,8 @@
 #   scripts/release.sh                 macOS and Windows
 #   scripts/release.sh --mac-only
 #   scripts/release.sh --windows-only
-# Never launches the built apps.
+# Never launches the built apps. A release version (exact tag) needs a clean tree;
+# dev builds of a dirty tree get a .dirty version suffix.
 # Cleaning is per platform: --mac-only removes only dist/*macos*, --windows-only
 # only dist/*windows*, all removes all of dist/. SHA256SUMS and the stage dir are
 # always rebuilt, and SHA256SUMS covers every dist/s3-anysync-* file present.
@@ -19,13 +20,20 @@ WAILS=${WAILS:-$HOME/go/bin/wails}
 need go npm git shasum
 case $mode in all | --mac-only) need lipo hdiutil ditto codesign /usr/libexec/PlistBuddy ;; esac
 case $mode in all | --windows-only) need makensis ;; esac
-[[ -x $WAILS ]] || die "wails CLI not found at $WAILS (go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0)"
+WAILS_VER=$(awk '$1 == "github.com/wailsapp/wails/v2" {print $2}' go.mod)
+[[ -n $WAILS_VER ]] || die "cannot find the wails/v2 version in go.mod"
+[[ -x $WAILS ]] || die "wails CLI not found at $WAILS (go install github.com/wailsapp/wails/v2/cmd/wails@$WAILS_VER)"
+"$WAILS" version 2>&1 | grep -qF "$WAILS_VER" || die "wails CLI at $WAILS is not $WAILS_VER (go install github.com/wailsapp/wails/v2/cmd/wails@$WAILS_VER)"
 
 ver=$(scripts/version.sh) || die "scripts/version.sh failed"
 VERSION=${ver%%$'\n'*}
 NUMERIC=${ver##*$'\n'}
 [[ -n $VERSION && -n $NUMERIC ]] || die "empty version"
 log "version $VERSION ($NUMERIC)"
+# A release (exact tag, no -dev) must be built from exactly the tagged commit.
+if [[ $VERSION != *-dev* && -n $(git status --porcelain) ]]; then
+  die "refusing to build release $VERSION from a dirty tree"
+fi
 DIST=$PWD/dist
 STAGE=$DIST/stage
 [[ -f go.mod && -d scripts && $DIST == "$PWD/dist" ]] || die "refusing to clean $DIST"
@@ -54,7 +62,7 @@ build_mac() {
   ditto cmd/gui/build/bin/s3-anysync.app "$app"
 
   log "macOS agent (arm64 + amd64)"
-  CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CGO_CFLAGS="$flags" CGO_LDFLAGS="$flags" \
+  CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" CGO_CFLAGS="$flags" CGO_LDFLAGS="$flags" \
     go build -trimpath -ldflags "$LDVER" -o "$STAGE/agent-arm64" ./cmd/agent
   CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" CGO_CFLAGS="$flags" CGO_LDFLAGS="$flags" \
     go build -trimpath -ldflags "$LDVER" -o "$STAGE/agent-amd64" ./cmd/agent
@@ -92,7 +100,7 @@ build_windows() {
   log "Windows agent and CLI"
   rm -f cmd/agent/*.syso
   go run github.com/tc-hib/go-winres@v0.3.3 simply \
-    --arch amd64 --out cmd/agent/rsrc --manifest cli \
+    --arch amd64 --out cmd/agent/rsrc --manifest gui \
     --icon cmd/gui/build/windows/icon.ico \
     --product-name s3-anysync --product-version "$v4" --file-version "$v4" \
     --file-description "s3-anysync agent and command-line tool" --copyright niceit

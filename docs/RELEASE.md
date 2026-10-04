@@ -18,9 +18,10 @@ scripts/release.sh --mac-only
 scripts/release.sh --windows-only
 ```
 
-- The version comes from the git tag: on an exact tag `vX.Y.Z` it is `X.Y.Z`; otherwise it is a dev version `0.0.0-dev+<short sha>`.
+- The version comes from the git tag: on an exact tag `vX.Y.Z` it is `X.Y.Z`; otherwise it is a dev version `0.0.0-dev+<short sha>`, with `.dirty` appended when the tree has uncommitted changes. A release (exact tag) refuses to build from a dirty tree.
 - Cleaning is per platform: no flag removes all of `dist/`; `--mac-only` removes only `dist/*macos*`; `--windows-only` only `dist/*windows*`. `SHA256SUMS` and the stage directory are always rebuilt, and `SHA256SUMS` covers every `dist/s3-anysync-*` file present.
 - `KEEP_STAGE=1 scripts/release.sh` keeps `dist/stage` (the staged executables) for inspection.
+- The script checks that the Wails CLI matches the `wails/v2` version in `go.mod`.
 - The script never launches the built apps and runs `scripts/verify-dist.sh` at the end.
 
 Outputs in `dist/` (git-ignored):
@@ -30,11 +31,11 @@ Outputs in `dist/` (git-ignored):
 - `s3-anysync-<ver>-windows-amd64-installer.exe`
 - `SHA256SUMS`
 
-`scripts/verify-dist.sh dist <version>` checks the artifacts without launching anything (every line must start with `ok`). Run it again after the final build.
+`scripts/verify-dist.sh dist <version>` checks the artifacts without launching anything (every line is `ok`; `skip ... (stage removed)` lines are allowed for the staged Windows executables, which only exist while release.sh runs; it fails when nothing was verified or `SHA256SUMS` lacks the version). Run it again after the final build.
 
-## Checklist before tagging
+## Checklist (run on the built artifacts)
 
-1. `scripts/verify-dist.sh` reports only `ok` lines (release.sh runs it).
+1. `scripts/verify-dist.sh` reports only `ok` lines (release.sh runs it; `skip` lines for the removed stage are fine).
 2. GUI hand-check with a temporary data folder and MinIO. Start an agent and the GUI with `S3_ANYSYNC_DATA_DIR=<tmp> S3_ANYSYNC_SECRETS=file` (see the README, Desktop GUI), then check:
    - startup: "Agent connected"; stopping the agent shows the "not reachable" banner and it clears when the agent is back;
    - profiles: MinIO preset, test dialog, edit with a blank secret, remove;
@@ -45,7 +46,7 @@ Outputs in `dist/` (git-ignored):
    - delete guard: deleting 5 of 8 files pauses the action, review and approve;
    - snapshots: restore with a target, selected files only;
    - cancel a running sync; settings (machine name, log level); theme (light, dark, system) survives a reload; leave an action.
-3. macOS on real use (your own account): install from the DMG; Gatekeeper first launch (right-click, Open); tray menu (Open, Sync all now, Pause all, Quit); a desktop notification (cause a conflict); accept the start-at-login prompt, log out and in, the agent is running; uninstall as described in INSTALL.md.
+3. macOS on real use (your own account): install from the DMG; Gatekeeper first launch (macOS 13–14: right-click, Open, Open; macOS 15 and later: System Settings → Privacy & Security → Open Anyway; or `xattr -dr com.apple.quarantine`); tray menu (Open, Sync all now, Pause all, Quit); a desktop notification (cause a conflict); accept the start-at-login prompt, log out and in, the agent is running; uninstall as described in INSTALL.md.
 4. Windows on a real machine:
    - install without an administrator prompt; SmartScreen warning (More info, Run anyway);
    - the window opens and starts the agent with no console window; tray icon;
@@ -54,13 +55,17 @@ Outputs in `dist/` (git-ignored):
    - IPC pipe owner check: a second user account cannot talk to the agent's pipe;
    - upgrade: run the new installer over an existing install while the agent runs;
    - uninstall: the Run entry and the PATH entry are removed, `%APPDATA%\s3-anysync` is kept; also the silent uninstall `uninstall.exe /S`.
-5. Tag and build the release:
-   ```bash
-   git tag -a vX.Y.Z -m "s3-anysync X.Y.Z"
-   scripts/release.sh
-   scripts/verify-dist.sh dist X.Y.Z
-   ```
-   Tag only after steps 1 to 4 pass. Publish the three files and `SHA256SUMS`.
+
+## Release flow
+
+The artifacts that ship are the ones you check:
+
+1. Commit everything.
+2. Create the tag locally on the candidate commit (not pushed): `git tag -a vX.Y.Z -m "s3-anysync X.Y.Z"`.
+3. `scripts/release.sh` builds that tag (it refuses a dirty tree).
+4. Run `scripts/verify-dist.sh dist X.Y.Z` and every check of the checklist above on exactly these artifacts.
+5. If anything fails: fix it, delete the local tag (`git tag -d vX.Y.Z`) and repeat from step 1.
+6. Push the tag (`git push origin vX.Y.Z`) and publish the three files and `SHA256SUMS`.
 
 ## Known issues for the release notes
 

@@ -7,26 +7,35 @@ Downloads are named `s3-anysync-<version>-macos-universal.dmg` (and `.zip`) and 
 Requires macOS 13 (Ventura) or newer. The app is universal (Apple Silicon and Intel).
 
 1. Open the DMG and drag `s3-anysync.app` to Applications (or unzip the ZIP and move the app).
-2. First launch: the app is only ad-hoc signed, not signed with an Apple Developer ID and not notarized, so Gatekeeper asks before it opens. Right-click the app, choose Open, then Open again (once). Or remove the quarantine flag in a terminal:
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/s3-anysync.app
-   ```
+2. First launch: the app is only ad-hoc signed, not signed with an Apple Developer ID and not notarized, so Gatekeeper blocks it on first launch.
+   - macOS 13–14: right-click the app → Open → Open.
+   - macOS 15 and later: open the app once (it is blocked), then System Settings → Privacy & Security → scroll to the message about s3-anysync → Open Anyway.
+   - On any version, removing the quarantine flag before the first launch also works:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/s3-anysync.app
+     ```
 3. The window starts the background agent if none is running, and the tray icon appears in the menu bar. Closing the window does not stop syncing; use Quit in the tray menu to stop the agent.
 
 **Command line.** The agent executable is also the command-line tool. To run it as `s3-anysync`:
 
 ```bash
-sudo ln -s /Applications/s3-anysync.app/Contents/MacOS/s3-anysync-agent /usr/local/bin/s3-anysync
+sudo mkdir -p /usr/local/bin && sudo ln -s /Applications/s3-anysync.app/Contents/MacOS/s3-anysync-agent /usr/local/bin/s3-anysync
 s3-anysync status
 ```
 
 **Data.** `~/Library/Application Support/s3-anysync` holds settings, sync state and `logs/`. Set `S3_ANYSYNC_DATA_DIR` to use another folder; this is for development only and it disables start at login.
 
-**Uninstall.** Turn off "Start the agent when I log in" in Settings, quit the agent from the tray icon, and move the app to the Trash. Delete the data folder to remove settings and sync state too.
+**Uninstall.**
+
+1. Turn off "Start the agent when I log in" in Settings first. That switch removes the login item (the LaunchAgent `~/Library/LaunchAgents/com.niceit.s3-anysync.agent.plist`); if the file is still there afterwards, delete it.
+2. Quit the agent from the tray icon and move the app to the Trash.
+3. If you created the command-line link: `sudo rm /usr/local/bin/s3-anysync`.
+4. Delete the data folder to remove settings and sync state too.
+5. Stored secrets stay in the Keychain under the service name `s3-anysync` even after the data folder is deleted. To remove them, open Keychain Access and search for `s3-anysync`.
 
 ## Windows
 
-Requires 64-bit Windows (amd64).
+Requires 64-bit Windows (amd64). The window needs the Microsoft Edge WebView2 runtime. It is preinstalled on current Windows 10 and 11; if it is missing, the app offers to download it.
 
 1. Run `s3-anysync-<version>-windows-amd64-installer.exe`. SmartScreen warns because the installer is not signed: click More info, then Run anyway.
 2. The installer is per user and needs no administrator rights. It installs into `%LOCALAPPDATA%\Programs\s3-anysync` and adds a Start menu shortcut.
@@ -40,11 +49,11 @@ Programs installed:
 
 **Data.** `%APPDATA%\s3-anysync` holds settings, sync state and `logs\`. `S3_ANYSYNC_DATA_DIR` overrides it (development only; disables start at login).
 
-**Uninstall.** Settings, Apps, s3-anysync, Uninstall. The uninstaller force-stops the agent and the window (there is no graceful stop), removes the login entry, the PATH entry (if you added it) and the WebView2 cache, and keeps `%APPDATA%\s3-anysync`. Delete that folder to remove settings and sync state too.
+**Uninstall.** Settings, Apps, s3-anysync, Uninstall. The uninstaller force-stops the agent and the window (there is no graceful stop), removes the login entry, the PATH entry (if you added it) and the WebView2 cache, and keeps `%APPDATA%\s3-anysync`. Delete that folder to remove settings and sync state too. Stored secrets stay in Windows Credential Manager (Windows Credentials) under the service name `s3-anysync` after you delete the folder; to remove them, open Credential Manager and search for `s3-anysync`.
 
 ## Start at login
 
-The first time the window starts it asks once whether to start s3-anysync at login. You can change it later with the "Start the agent when I log in" switch in Settings. With `S3_ANYSYNC_DATA_DIR` set the switch is hidden and start at login is refused.
+The first time you open the window it asks whether to start at login; if you close the question without answering, or enabling fails, it asks again next time. You can change it later with the "Start the agent when I log in" switch in Settings. With `S3_ANYSYNC_DATA_DIR` set the switch is hidden and start at login is refused.
 
 ## Upgrading
 

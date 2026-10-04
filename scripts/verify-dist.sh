@@ -4,11 +4,13 @@
 # A platform is verified when at least one of its artifacts exists; if some are
 # missing it is a FAIL, if none exist it is skipped. The staged Windows executables
 # are checked only while DIST/stage/win exists (release.sh runs this before removing it).
-# Exits non-zero if any check fails.
+# Exits non-zero if any check fails, if both platforms are skipped (nothing verified)
+# or if SHA256SUMS has no line for a file of this VERSION.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 DIST=${1:?dist dir}; VERSION=${2:?version}; NUMERIC=${VERSION%%-*}
 fail=0
+skipped=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
 skip() { echo "skip $*"; }
@@ -72,7 +74,7 @@ if [[ -f $zip || -f $dmg ]]; then
     bad "missing $dmg"
   fi
 else
-  skip "macOS (not built)"
+  skip "macOS (not built)"; skipped=$((skipped + 1))
 fi
 
 pecheck=$tmp/pecheck
@@ -97,12 +99,14 @@ if [[ -f $exe || -d $DIST/stage/win ]]; then
     skip "GUI .exe subsystem (stage removed)"
   fi
 else
-  skip "windows (not built)"
+  skip "windows (not built)"; skipped=$((skipped + 1))
 fi
 
 if [[ -f $DIST/SHA256SUMS ]]; then
   check "SHA256SUMS" bash -c "cd '$DIST' && shasum -a 256 -c SHA256SUMS"
+  grep -qF -- "-$VERSION-" "$DIST/SHA256SUMS" && ok "SHA256SUMS lists files of version $VERSION" || bad "SHA256SUMS has no line for version $VERSION"
 else
   bad "missing $DIST/SHA256SUMS"
 fi
+[[ $skipped -lt 2 ]] || bad "nothing verified: no artifacts for version $VERSION in $DIST"
 exit $fail

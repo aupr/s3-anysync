@@ -6,7 +6,7 @@ Design: [docs/superpowers/specs/2026-10-01-s3-anysync-design.md](docs/superpower
 
 ## Status
 
-Plans 1 to 4 are done: the sync engine, the command line, the background agent (triggers, tray, notifications, IPC, autostart), the desktop GUI, and packaging (macOS app in a DMG and ZIP, Windows installer). See [docs/INSTALL.md](docs/INSTALL.md) and [docs/RELEASE.md](docs/RELEASE.md).
+Implemented: the sync engine, the command line, the background agent (triggers, tray, notifications, IPC, autostart), the desktop GUI and the packaging scripts (macOS app in a DMG and ZIP, Windows installer). The Windows installer, the IPC pipe-owner check and the tray, notification and start-at-login behavior have not been run on real hardware yet (see the checklist in [docs/RELEASE.md](docs/RELEASE.md)). See [docs/INSTALL.md](docs/INSTALL.md) and [docs/RELEASE.md](docs/RELEASE.md).
 
 ## Install
 
@@ -14,7 +14,7 @@ macOS 13 or newer (universal app) and Windows (amd64, per-user installer). The b
 
 ## Releasing
 
-Maintainers build the release artifacts with `scripts/release.sh` on a Mac and work through the checklist in [docs/RELEASE.md](docs/RELEASE.md) before tagging.
+Maintainers build the release artifacts with `scripts/release.sh` on a Mac and follow the release flow in [docs/RELEASE.md](docs/RELEASE.md): tag locally, build, check those artifacts, then push the tag and publish.
 
 ## Concepts
 

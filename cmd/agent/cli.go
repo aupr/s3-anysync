@@ -73,6 +73,21 @@ through it; otherwise they run in this process.
 Environment: S3_ANYSYNC_DATA_DIR overrides the data folder.
 `
 
+// usageFor returns the usage text for the executable role: the CLI-only
+// executable is s3-anysync-cli and cannot run the agent.
+func usageFor(role string) string {
+	if role != "cli" {
+		return usage
+	}
+	var keep []string
+	for _, l := range strings.SplitAfter(usage, "\n") {
+		if !strings.HasPrefix(l, "  run [--no-tray]") {
+			keep = append(keep, l)
+		}
+	}
+	return strings.ReplaceAll(strings.Join(keep, ""), "s3-anysync-agent", "s3-anysync-cli")
+}
+
 type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
@@ -94,12 +109,12 @@ func run(args []string, stdout, stderr io.Writer, connect connector) int {
 		"conflicts": (*cli).conflicts, "diff": (*cli).diff, "resolve": (*cli).resolve, "history": (*cli).history,
 	}
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+		fmt.Fprint(stderr, usageFor(role))
 		return 2
 	}
 	cmd, ok := commands[args[0]]
 	if !ok {
-		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
+		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usageFor(role))
 		return 2
 	}
 	ctx := context.Background()
@@ -277,6 +292,7 @@ func (c *cli) autostart(ctx context.Context, args []string) error {
 			return errors.New(devMsg)
 		}
 		s.Autostart = args[0] == "enable"
+		s.AutostartOffered = true // enable and disable both answer the first-run question
 		if s, err = c.svc.UpdateSettings(ctx, s); err != nil {
 			return err
 		}

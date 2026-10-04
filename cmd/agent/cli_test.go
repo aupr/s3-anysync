@@ -429,3 +429,32 @@ func TestCLIAutostartEnableMarksOffered(t *testing.T) {
 		t.Fatalf("settings = %+v, %v", s, err)
 	}
 }
+
+func TestCLIAutostartDisableMarksOffered(t *testing.T) {
+	dir, sec, fa := t.TempDir(), secrets.NewMemory(), &fakeAutostart{}
+	open := func(ctx context.Context) (api.Service, func(), error) {
+		return connectTo(ctx, dir, sec, fa, nil)
+	}
+	runOK(t, open, "autostart", "disable") // already off: still answers the question
+	svc, closeFn, err := open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeFn()
+	if s, err := svc.Settings(context.Background()); err != nil || !s.AutostartOffered {
+		t.Fatalf("settings = %+v, %v", s, err)
+	}
+}
+
+func TestUsageForRole(t *testing.T) {
+	cli := usageFor("cli")
+	if strings.Contains(cli, "run [--no-tray]") || strings.Contains(cli, "s3-anysync-agent") || !strings.Contains(cli, "s3-anysync-cli") {
+		t.Fatalf("cli usage:\n%s", cli)
+	}
+	if !strings.Contains(cli, "  status\n") {
+		t.Fatal("cli usage lost status")
+	}
+	if usageFor("") != usage || !strings.Contains(usage, "run [--no-tray]") {
+		t.Fatal("agent usage changed")
+	}
+}
