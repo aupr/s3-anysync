@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useToast } from '../components/toast'
 import { Button, ConfirmDialog, EmptyState, Modal, td, th } from '../components/ui'
 import { api } from '../lib/api'
@@ -14,22 +14,35 @@ export function Profiles() {
   const [removing, setRemoving] = useState<Profile | null>(null)
   const [probe, setProbe] = useState<{ p: Profile; r: ProbeResult | null } | null>(null)
 
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const probeSeq = useRef(0)
+  const closeProbe = () => {
+    probeSeq.current++
+    setProbe(null)
+  }
+
   const usedBy = (id: string) => Object.values(state.actions).filter((a) => a.profileId === id).map((a) => a.action.name)
   const done = () => {
     setEditing(null)
     reloadProfiles().catch(toast.error)
   }
   const test = async (p: Profile) => {
+    const seq = ++probeSeq.current
     setProbe({ p, r: null })
     try {
-      setProbe({ p, r: await api.testProfile(p.id) })
+      const r = await api.testProfile(p.id)
+      if (seq !== probeSeq.current) return
+      setProbe({ p, r })
       reloadProfiles().catch(toast.error)
     } catch (e) {
+      if (seq !== probeSeq.current) return
       setProbe(null)
       toast.error(e)
     }
   }
   const remove = async (p: Profile) => {
+    if (removeBusy) return
+    setRemoveBusy(true)
     try {
       await api.removeProfile(p.id)
       setRemoving(null)
@@ -37,6 +50,8 @@ export function Profiles() {
     } catch (e) {
       setRemoving(null)
       toast.error(e)
+    } finally {
+      setRemoveBusy(false)
     }
   }
 
@@ -61,9 +76,9 @@ export function Profiles() {
                   <td className={td}>{p.endpoint || 'AWS default'}</td>
                   <td className={td}>{p.conditionalWrites ? 'Conditional' : 'Best effort'}</td>
                   <td className={`${td} space-x-2 whitespace-nowrap text-right`}>
-                    <Button onClick={() => setEditing(p)}>Edit</Button>
-                    <Button onClick={() => test(p)}>Test connection</Button>
-                    <Button variant="danger" disabled={used.length > 0} title={used.length ? `Used by: ${used.join(', ')}` : undefined} onClick={() => setRemoving(p)}>Remove</Button>
+                    <Button aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>Edit</Button>
+                    <Button aria-label={`Test connection ${p.name}`} onClick={() => test(p)}>Test connection</Button>
+                    <Button variant="danger" aria-label={used.length ? `Remove ${p.name} (used by: ${used.join(', ')})` : `Remove ${p.name}`} disabled={used.length > 0} title={used.length ? `Used by: ${used.join(', ')}` : undefined} onClick={() => setRemoving(p)}>Remove</Button>
                   </td>
                 </tr>
               )
@@ -73,12 +88,12 @@ export function Profiles() {
       )}
       {editing && <ProfileForm profile={editing === 'new' ? undefined : editing} onSaved={done} onCancel={() => setEditing(null)} />}
       {removing && (
-        <ConfirmDialog title={`Remove ${removing.name}?`} danger confirmLabel="Remove"
+        <ConfirmDialog title={`Remove ${removing.name}?`} danger busy={removeBusy} confirmLabel="Remove"
           message="The profile and its stored secret are deleted from this machine. The bucket is not touched."
           onCancel={() => setRemoving(null)} onConfirm={() => remove(removing)} />
       )}
       {probe && (
-        <Modal title={`Test ${probe.p.name}`} onClose={() => setProbe(null)} footer={<Button onClick={() => setProbe(null)}>Close</Button>}>
+        <Modal title={`Test ${probe.p.name}`} onClose={closeProbe} footer={<Button onClick={closeProbe}>Close</Button>}>
           {probe.r ? <ProbeChecklist result={probe.r} /> : <p className="text-sm">Testing…</p>}
         </Modal>
       )}

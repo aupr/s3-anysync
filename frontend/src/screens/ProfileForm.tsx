@@ -31,6 +31,7 @@ export function ProfileForm({ profile, onSaved, onCancel }: { profile?: Profile;
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [probe, setProbe] = useState<ProbeResult | null>(null)
+  const [testing, setTesting] = useState(false)
   const [saved, setSaved] = useState<Profile | null>(null)
   const dirty = !saved && (JSON.stringify(p) !== JSON.stringify(profile ?? blank) || secret !== '')
   useDirtyGuard(dirty)
@@ -38,7 +39,18 @@ export function ProfileForm({ profile, onSaved, onCancel }: { profile?: Profile;
 
   const pickProvider = (id: string) => {
     const pre = providers.find((x) => x.id === id)!
-    setP((x) => ({ ...x, provider: id, endpoint: pre.endpoint, region: pre.region, pathStyle: pre.pathStyle }))
+    setP((x) => {
+      if (!editing) return { ...x, provider: id, endpoint: pre.endpoint, region: pre.region, pathStyle: pre.pathStyle }
+      // Editing: keep real values; only replace ones still at the previous preset's default.
+      const old = providers.find((y) => y.id === x.provider)
+      return {
+        ...x,
+        provider: id,
+        endpoint: !x.endpoint || x.endpoint === old?.endpoint ? pre.endpoint : x.endpoint,
+        region: !x.region || x.region === old?.region ? pre.region : x.region,
+        pathStyle: x.pathStyle === old?.pathStyle ? pre.pathStyle : x.pathStyle,
+      }
+    })
   }
 
   const save = async () => {
@@ -50,8 +62,16 @@ export function ProfileForm({ profile, onSaved, onCancel }: { profile?: Profile;
     try {
       const out = editing ? await api.updateProfile(p, secret) : await api.addProfile(p, secret)
       setSaved(out)
-      if (!editing) setProbe(await api.testProfile(out.id).catch((e) => { setError(describeError(e).message); return null }))
-      else onSaved(out)
+      if (!editing) {
+        setTesting(true)
+        try {
+          setProbe(await api.testProfile(out.id))
+        } catch (e) {
+          setError(describeError(e).message)
+        } finally {
+          setTesting(false)
+        }
+      } else onSaved(out)
     } catch (e) {
       const d = describeError(e)
       setError(d.details ? `${d.message} (${d.details})` : d.message)
@@ -63,7 +83,7 @@ export function ProfileForm({ profile, onSaved, onCancel }: { profile?: Profile;
   if (saved && !editing) {
     return (
       <Modal title="Profile saved" onClose={() => onSaved(saved)} footer={<Button variant="primary" onClick={() => onSaved(saved)}>Done</Button>}>
-        {probe ? <ProbeChecklist result={probe} /> : <p className="text-sm">Testing the connection…</p>}
+        {probe ? <ProbeChecklist result={probe} /> : testing ? <p className="text-sm">Testing the connection…</p> : <p className="text-sm">The profile was saved, but the connection test failed.</p>}
         {error && <p role="alert" className="mt-2 text-sm text-red-600">{error}</p>}
       </Modal>
     )
@@ -71,9 +91,9 @@ export function ProfileForm({ profile, onSaved, onCancel }: { profile?: Profile;
 
   const preset = providers.find((x) => x.id === p.provider)
   return (
-    <Modal title={editing ? `Edit ${profile!.name}` : 'New profile'} onClose={onCancel} footer={
+    <Modal title={editing ? `Edit ${profile!.name}` : 'New profile'} onClose={() => { if (!busy) onCancel() }} footer={
       <>
-        <Button onClick={onCancel}>Cancel</Button>
+        <Button disabled={busy} onClick={onCancel}>Cancel</Button>
         <Button variant="primary" disabled={busy} onClick={save}>Save</Button>
       </>
     }>
