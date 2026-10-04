@@ -35,6 +35,8 @@ Outputs in `dist/` (git-ignored):
 
 ## Checklist (run on the built artifacts)
 
+A fill-in version of this checklist is in [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md).
+
 1. `scripts/verify-dist.sh` reports only `ok` lines (release.sh runs it; `skip` lines for the removed stage are fine).
 2. GUI hand-check with a temporary data folder and MinIO. Start an agent and the GUI with `S3_ANYSYNC_DATA_DIR=<tmp> S3_ANYSYNC_SECRETS=file` (see the README, Desktop GUI), then check:
    - startup: "Agent connected"; stopping the agent shows the "not reachable" banner and it clears when the agent is back;
