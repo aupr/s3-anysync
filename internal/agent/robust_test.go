@@ -103,6 +103,38 @@ type gateStore struct {
 	mu      sync.Mutex
 	mode    string // "", "fail", "block"
 	entered chan struct{}
+	release chan struct{} // for mode "hold"
+}
+
+// hold parks any storage call while mode is "hold", ignoring contexts, so a
+// test can keep a job running past its caller's deadline.
+func (g *gateStore) hold() {
+	g.mu.Lock()
+	mode := g.mode
+	g.mu.Unlock()
+	if mode != "hold" {
+		return
+	}
+	select {
+	case g.entered <- struct{}{}:
+	default:
+	}
+	<-g.release
+}
+
+func (g *gateStore) Get(c context.Context, key string) ([]byte, storage.Object, error) {
+	g.hold()
+	return g.Memory.Get(c, key)
+}
+
+func (g *gateStore) PutIfAbsent(c context.Context, key string, body []byte) (storage.Object, error) {
+	g.hold()
+	return g.Memory.PutIfAbsent(c, key, body)
+}
+
+func (g *gateStore) PutIfMatch(c context.Context, key string, body []byte, etag string) (storage.Object, error) {
+	g.hold()
+	return g.Memory.PutIfMatch(c, key, body, etag)
 }
 
 func (g *gateStore) set(mode string) { g.mu.Lock(); g.mode = mode; g.mu.Unlock() }
@@ -115,6 +147,8 @@ func (g *gateStore) Put(c context.Context, key string, body []byte, meta map[str
 		switch mode {
 		case "fail":
 			return storage.Object{}, errors.New("network is down")
+		case "panic":
+			panic("storage exploded")
 		case "block":
 			select {
 			case g.entered <- struct{}{}:
@@ -124,6 +158,7 @@ func (g *gateStore) Put(c context.Context, key string, body []byte, meta map[str
 			return storage.Object{}, c.Err()
 		}
 	}
+	g.hold()
 	return g.Memory.Put(c, key, body, meta)
 }
 
@@ -193,12 +228,14 @@ func TestUserPauseSuppressesRetryTimer(t *testing.T) {
 		t.Fatalf("status = %+v", st)
 	}
 	w, _ := e.m.worker(act.ID)
-	w.do(ctx, func(context.Context) (any, error) {
+	if _, err := w.do(ctx, func(context.Context) (any, error) {
 		if w.retry != nil {
 			t.Error("retry timer armed while paused")
 		}
 		return nil, nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLeaveActionCancelsQueuedJobs(t *testing.T) {
@@ -307,13 +344,186 @@ func TestUpdateSettingsValidatesBeforeApplying(t *testing.T) {
 	act, _, _ := e.newAction(t, 1)
 	w, _ := e.m.worker(act.ID)
 	e.m.Sync(ctx, act.ID) // caches a runner
-	if got, err := e.m.UpdateSettings(ctx, s); err != nil || got.MachineName != "Renamed" {
-		t.Fatalf("update = %+v, %v", got, err)
+	var oldRunner *engine.Runner
+	if _, err := w.do(ctx, func(context.Context) (any, error) { oldRunner = w.runner; return nil, nil }); err != nil || oldRunner == nil {
+		t.Fatalf("no cached runner: %v", err)
 	}
-	w.do(ctx, func(context.Context) (any, error) {
-		if w.runner != nil {
-			t.Error("runner not reset after rename")
+	started, release := make(chan struct{}), make(chan struct{})
+	jobDone := make(chan struct{})
+	go func() {
+		w.do(ctx, func(context.Context) (any, error) { close(started); <-release; return nil, nil })
+		close(jobDone)
+	}()
+	<-started
+	upd := make(chan error, 1)
+	go func() {
+		got, err := e.m.UpdateSettings(ctx, s)
+		if err == nil && got.MachineName != "Renamed" {
+			err = errors.New("name not applied: " + got.MachineName)
+		}
+		upd <- err
+	}()
+	select {
+	case err := <-upd:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("UpdateSettings blocked behind a busy worker")
+	}
+	close(release)
+	<-jobDone
+	if _, err := e.m.Sync(ctx, act.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.do(ctx, func(context.Context) (any, error) {
+		if w.runner == nil || w.runner == oldRunner || w.gen != e.m.nameGen.Load() {
+			t.Error("runner not rebuilt after the rename")
 		}
 		return nil, nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLeaveWithExpiredCallerContextDoesNotLeaveDeadWorker(t *testing.T) {
+	g := &gateStore{Memory: storage.NewMemory(), entered: make(chan struct{}, 1), release: make(chan struct{})}
+	e := newEnv(t, g)
+	act, _, _ := e.newAction(t, 1)
+	g.set("hold")
+	cctx, cancel := context.WithCancel(ctx)
+	leave := make(chan error, 1)
+	go func() { leave <- e.m.LeaveAction(cctx, act.ID, false) }()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leave never reached storage")
+	}
+	cancel() // the caller gives up while the leave is running
+	if err := <-leave; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leave err = %v", err)
+	}
+	g.set("")
+	close(g.release) // the leave finishes and cancels the worker after the caller left
+	waitFor(t, "action gone", func() bool { _, err := e.a.DB.GetAction(act.ID); return err != nil })
+	// The same action id can be joined again and works.
+	p, _ := e.m.Profiles(ctx)
+	if _, err := e.m.JoinAction(ctx, api.JoinActionRequest{ProfileID: p[0].ID, ActionID: act.ID}); err != nil {
+		t.Fatalf("join after leave: %v", err)
+	}
+	if _, err := e.m.Sync(ctx, act.ID); err != nil {
+		t.Fatalf("sync after rejoin: %v", err)
+	}
+}
+
+func TestCancelledWorkerRunsNoSync(t *testing.T) {
+	e := newEnv(t, storage.NewMemory())
+	act, _, _ := e.newAction(t, 1)
+	w, _ := e.m.worker(act.ID)
+	sctx, stop := context.WithCancel(ctx)
+	defer stop()
+	ch, _ := e.m.Subscribe(sctx)
+	w.cancel()
+	<-w.done
+	w.autoSync("wake")
+	w.autoSync("retry")
+	select {
+	case ev := <-ch:
+		t.Fatalf("event after cancel: %+v", ev)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if n := historyLen(t, e, act.ID); n != 0 {
+		t.Fatalf("history = %d", n)
+	}
+}
+
+func TestPanicInSyncIsRecordedAsFailure(t *testing.T) {
+	g := &gateStore{Memory: storage.NewMemory(), entered: make(chan struct{}, 1)}
+	e := newEnv(t, g, func(o *Options) { o.Backoff = []time.Duration{time.Hour} })
+	act, _, dir := e.newAction(t, 1)
+	w, _ := e.m.worker(act.ID)
+	e.m.Sync(ctx, act.ID) // cache a runner
+	os.WriteFile(filepath.Join(dir, "s00.json"), []byte("changed"), 0o644)
+	g.set("panic")
+	w.trigger("wake") // an automatic sync that panics
+	waitFor(t, "panic recorded", func() bool { st := e.state(t, act.ID); return st.State == api.StateError && st.Failures >= 1 })
+	if _, err := w.do(ctx, func(context.Context) (any, error) {
+		if w.runner != nil {
+			t.Error("runner kept after panic")
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := e.state(t, act.ID)
+	if !strings.Contains(st.LastError, "internal error") || st.NextRun.IsZero() {
+		t.Fatalf("status = %+v", st)
+	}
+	g.set("")
+	if _, err := e.m.Sync(ctx, act.ID); err != nil {
+		t.Fatalf("sync after panic: %v", err)
+	}
+	if st := e.state(t, act.ID); st.State != api.StateIdle || st.Failures != 0 {
+		t.Fatalf("status = %+v", st)
+	}
+}
+
+func TestPauseClearsRetryTimerAndNextRun(t *testing.T) {
+	g := &gateStore{Memory: storage.NewMemory(), entered: make(chan struct{}, 1)}
+	e := newEnv(t, g, func(o *Options) { o.Backoff = []time.Duration{150 * time.Millisecond} })
+	act, _, _ := e.newAction(t, 1)
+	g.set("fail")
+	if _, err := e.m.Sync(ctx, act.ID); err == nil {
+		t.Fatal("sync should fail")
+	}
+	if st := e.state(t, act.ID); st.NextRun.IsZero() {
+		t.Fatalf("no retry armed: %+v", st)
+	}
+	if err := e.m.Pause(ctx, act.ID); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.state(t, act.ID); st.State != api.StatePausedUser || !st.NextRun.IsZero() {
+		t.Fatalf("status = %+v", st)
+	}
+	before := historyLen(t, e, act.ID)
+	time.Sleep(400 * time.Millisecond)
+	if n := historyLen(t, e, act.ID); n != before {
+		t.Fatalf("a retry ran while paused (%d -> %d)", before, n)
+	}
+	w, _ := e.m.worker(act.ID)
+	if _, err := w.do(ctx, func(context.Context) (any, error) {
+		if w.retry != nil {
+			t.Error("retry timer still armed")
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDoReturnsWhenCallerGivesUpDuringShutdown(t *testing.T) {
+	wctx, wcancel := context.WithCancel(ctx)
+	w := &worker{ctx: wctx, cancel: wcancel, jobs: make(chan *job, 1), done: make(chan struct{})} // loop never runs
+	cctx, ccancel := context.WithCancel(ctx)
+	res := make(chan error, 1)
+	go func() { _, err := w.do(cctx, func(context.Context) (any, error) { return nil, nil }); res <- err }()
+	waitFor(t, "job queued", func() bool { return len(w.jobs) == 1 })
+	wcancel()
+	time.Sleep(50 * time.Millisecond)
+	ccancel()
+	select {
+	case err := <-res:
+		if err == nil {
+			t.Fatal("want an error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("do ignored the caller's context while waiting for shutdown")
+	}
+}
+
+func TestShuttingDownIsUnavailable(t *testing.T) {
+	if !errors.Is(errShuttingDown, api.ErrUnavailable) || api.Code(errShuttingDown) != "unavailable" {
+		t.Fatalf("errShuttingDown = %v (%s)", errShuttingDown, api.Code(errShuttingDown))
+	}
 }

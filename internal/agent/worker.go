@@ -70,6 +70,7 @@ type worker struct {
 
 	// Owned by the loop goroutine.
 	runner *engine.Runner
+	gen    uint64 // Manager.nameGen when runner was built
 	retry  *time.Timer
 	trig   *triggerSet
 
@@ -115,9 +116,15 @@ func (w *worker) loop() {
 		case j := <-w.jobs:
 			w.runJob(j)
 		case reason := <-w.wake:
+			if w.ctx.Err() != nil {
+				return
+			}
 			w.guard(func() { w.autoSync(reason) })
 		case <-retryC:
 			w.retry = nil
+			if w.ctx.Err() != nil {
+				return
+			}
 			w.guard(func() { w.autoSync("retry") })
 		}
 	}
@@ -146,6 +153,7 @@ func (w *worker) guard(f func(), errp ...*error) {
 	defer func() {
 		if r := recover(); r != nil {
 			w.m.log.Error("panic in worker", "action", w.id, "panic", r, "stack", string(debug.Stack()))
+			w.runner = nil // may be in a half-updated state
 			w.setRunning(false)
 			if len(errp) > 0 {
 				*errp[0] = fmt.Errorf("agent: internal error: %v", r)
@@ -189,6 +197,8 @@ func (w *worker) do(ctx context.Context, fn func(ctx context.Context) (any, erro
 			default:
 				return nil, errShuttingDown
 			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -197,9 +207,10 @@ func (w *worker) do(ctx context.Context, fn func(ctx context.Context) (any, erro
 
 // autoSync runs a sync for a trigger unless the state forbids it.
 func (w *worker) autoSync(reason string) {
-	w.mu.Lock()
-	st := w.st
-	w.mu.Unlock()
+	if w.ctx.Err() != nil {
+		return // cancelled or left: nothing may run, record or publish
+	}
+	st := w.snapshot()
 	switch st.state {
 	case api.StatePausedUser, api.StatePausedConflict, api.StatePausedDeletes:
 		return
@@ -213,12 +224,12 @@ func (w *worker) autoSync(reason string) {
 }
 
 func (w *worker) getRunner() (*engine.Runner, error) {
-	if w.runner == nil {
+	if gen := w.m.nameGen.Load(); w.runner == nil || w.gen != gen {
 		r, err := w.m.app.Runner(w.id)
 		if err != nil {
 			return nil, err
 		}
-		w.runner = r
+		w.runner, w.gen = r, gen
 	}
 	return w.runner, nil
 }
@@ -232,7 +243,7 @@ func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResu
 		return model.SyncResult{}, err
 	}
 	w.setRunning(true)
-	res, err := f(w.ctx, r)
+	res, err := w.callEngine(f, r)
 	w.setRunning(false)
 	if errors.Is(err, engine.ErrInvalidInput) {
 		// The caller's request was wrong; the action did not fail.
@@ -246,10 +257,32 @@ func (w *worker) runSync(f func(context.Context, *engine.Runner) (model.SyncResu
 	return res, err
 }
 
-func (w *worker) setRunning(on bool) {
+// callEngine runs an engine call; a panic in it becomes an ordinary error
+// (so it is recorded as a failure and retried) and discards the runner.
+func (w *worker) callEngine(f func(context.Context, *engine.Runner) (model.SyncResult, error), r *engine.Runner) (res model.SyncResult, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			w.m.log.Error("panic in sync", "action", w.id, "panic", p, "stack", string(debug.Stack()))
+			w.runner = nil
+			res, err = model.SyncResult{}, fmt.Errorf("agent: internal error: %v", p)
+		}
+	}()
+	return f(w.ctx, r)
+}
+
+// snapshot copies the state; the lock never outlives the call.
+func (w *worker) snapshot() wstate {
 	w.mu.Lock()
-	w.st.running = on
-	w.mu.Unlock()
+	defer w.mu.Unlock()
+	return w.st
+}
+
+func (w *worker) setRunning(on bool) {
+	func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.st.running = on
+	}()
 	w.publishState()
 }
 
@@ -261,52 +294,55 @@ func (w *worker) afterRun(res model.SyncResult, err error) {
 	retryIn := time.Duration(0)
 	paused, perr := w.m.app.Paused(w.id)
 	paused = perr == nil && paused
-	w.mu.Lock()
-	st := &w.st
-	st.lastRun = now
-	switch {
-	case err != nil:
-		st.failures++
-		st.lastOutcome, st.lastError, st.lastSummary = model.OutcomeError, err.Error(), ""
-		st.state = api.StateError
-		st.permanent = isPermanent(err)
-		if st.permanent {
+	func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		st := &w.st
+		st.lastRun = now
+		switch {
+		case err != nil:
+			st.failures++
+			st.lastOutcome, st.lastError, st.lastSummary = model.OutcomeError, err.Error(), ""
+			st.state = api.StateError
+			st.permanent = isPermanent(err)
+			if st.permanent {
+				st.nextRun = time.Time{}
+				message = fmt.Sprintf("%s needs attention: %v", name, err)
+			} else {
+				if !paused {
+					retryIn = w.m.backoff(st.failures)
+					st.nextRun = now.Add(retryIn)
+				}
+				if st.failures == NotifyAfterFailures {
+					message = fmt.Sprintf("%s failed %d times: %v", name, st.failures, err)
+				}
+			}
+		case res.Outcome == model.OutcomeConflict:
+			if st.state != api.StatePausedConflict {
+				message = fmt.Sprintf("%s: %d conflict(s) need your choice", name, len(res.Conflicts))
+			}
+			st.state, st.conflicts = api.StatePausedConflict, len(res.Conflicts)
+			st.failures, st.permanent, st.lastError, st.nextRun = 0, false, "", time.Time{}
+			st.lastOutcome, st.lastSummary = res.Outcome, res.Summary()
+		case res.Outcome == model.OutcomeDeletesPending:
+			if st.state != api.StatePausedDeletes {
+				message = fmt.Sprintf("%s: %d deletion(s) are waiting for your approval", name, len(res.PendingDeletes))
+			}
+			st.state, st.pending = api.StatePausedDeletes, len(res.PendingDeletes)
+			st.failures, st.permanent, st.lastError, st.nextRun = 0, false, "", time.Time{}
+			st.lastOutcome, st.lastSummary = res.Outcome, res.Summary()
+		default:
+			st.failures, st.permanent, st.lastError = 0, false, ""
+			st.conflicts, st.pending = len(res.Conflicts), 0
+			st.lastOutcome, st.lastSummary = res.Outcome, res.Summary()
+			st.state = api.StateIdle
+			st.nextRun = w.nextScheduled()
+		}
+		if paused {
+			st.state = api.StatePausedUser
 			st.nextRun = time.Time{}
-			message = fmt.Sprintf("%s needs attention: %v", name, err)
-		} else {
-			if !paused {
-				retryIn = w.m.backoff(st.failures)
-				st.nextRun = now.Add(retryIn)
-			}
-			if st.failures == NotifyAfterFailures {
-				message = fmt.Sprintf("%s failed %d times: %v", name, st.failures, err)
-			}
 		}
-	case res.Outcome == model.OutcomeConflict:
-		if st.state != api.StatePausedConflict {
-			message = fmt.Sprintf("%s: %d conflict(s) need your choice", name, len(res.Conflicts))
-		}
-		st.state, st.conflicts = api.StatePausedConflict, len(res.Conflicts)
-		st.failures, st.permanent, st.lastError, st.nextRun = 0, false, "", time.Time{}
-		st.lastOutcome, st.lastSummary = res.Outcome, res.Summary()
-	case res.Outcome == model.OutcomeDeletesPending:
-		if st.state != api.StatePausedDeletes {
-			message = fmt.Sprintf("%s: %d deletion(s) are waiting for your approval", name, len(res.PendingDeletes))
-		}
-		st.state, st.pending = api.StatePausedDeletes, len(res.PendingDeletes)
-		st.failures, st.permanent, st.lastError, st.nextRun = 0, false, "", time.Time{}
-		st.lastOutcome, st.lastSummary = res.Outcome, res.Summary()
-	default:
-		st.failures, st.permanent, st.lastError = 0, false, ""
-		st.conflicts, st.pending = len(res.Conflicts), 0
-		st.lastOutcome, st.lastSummary = res.Outcome, res.Summary()
-		st.state = api.StateIdle
-		st.nextRun = w.nextScheduled()
-	}
-	if paused {
-		st.state = api.StatePausedUser
-	}
-	w.mu.Unlock()
+	}()
 
 	if w.retry != nil {
 		w.retry.Stop()
@@ -338,16 +374,16 @@ func (w *worker) actionName() string {
 
 // setState changes the state outside a run (pause, resume, snapshot conflicts).
 func (w *worker) setState(f func(*wstate)) {
-	w.mu.Lock()
-	f(&w.st)
-	w.mu.Unlock()
+	func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		f(&w.st)
+	}()
 	w.publishState()
 }
 
 func (w *worker) status(a model.Action) api.ActionStatus {
-	w.mu.Lock()
-	st := w.st
-	w.mu.Unlock()
+	st := w.snapshot()
 	return api.ActionStatus{
 		Action: a, ProfileID: a.ProfileID, State: st.state, Running: st.running,
 		LastRun: st.lastRun, LastOutcome: st.lastOutcome, LastSummary: st.lastSummary, LastError: st.lastError,

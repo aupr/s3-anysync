@@ -30,6 +30,7 @@ func TestCodesRoundTrip(t *testing.T) {
 		ErrInvalid:                  "invalid",
 		engine.ErrInvalidInput:      "invalid",
 		ErrUnsupported:              "unsupported",
+		ErrUnavailable:              "unavailable",
 	}
 	for sentinel, code := range cases {
 		wrapped := fmt.Errorf("context: %w", sentinel)
@@ -56,7 +57,7 @@ func TestHTTPStatus(t *testing.T) {
 	cases := map[string]int{
 		"not-found": http.StatusNotFound, "invalid": http.StatusBadRequest, "conflict-pending": http.StatusConflict,
 		"locked": http.StatusConflict, "busy": http.StatusConflict, "access-denied": http.StatusForbidden,
-		"unsupported": http.StatusNotImplemented, "internal": http.StatusInternalServerError, "decrypt": http.StatusUnprocessableEntity,
+		"unsupported": http.StatusNotImplemented, "unavailable": http.StatusServiceUnavailable, "internal": http.StatusInternalServerError, "decrypt": http.StatusUnprocessableEntity,
 	}
 	for code, want := range cases {
 		if got := HTTPStatus(code); got != want {

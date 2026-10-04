@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/niceit/s3-anysync/internal/api"
@@ -51,7 +52,7 @@ var DefaultBackoff = []time.Duration{30 * time.Second, 2 * time.Minute, 10 * tim
 const NotifyAfterFailures = 3
 
 // errShuttingDown is returned to callers waiting on a job when the agent stops.
-var errShuttingDown = errors.New("agent: shutting down")
+var errShuttingDown = api.ErrUnavailable
 
 // Manager owns the per-action workers.
 type Manager struct {
@@ -64,6 +65,9 @@ type Manager struct {
 	mu      sync.Mutex
 	workers map[string]*worker
 	started bool
+	// nameGen counts machine renames; workers rebuild their runner when it
+	// moves past the generation theirs was built at.
+	nameGen atomic.Uint64
 }
 
 var _ api.Service = (*Manager)(nil)
@@ -106,18 +110,36 @@ func (m *Manager) Start() error {
 }
 
 func (m *Manager) startWorkerLocked(id string) {
-	if _, ok := m.workers[id]; ok {
+	if old, ok := m.workers[id]; ok && old.ctx.Err() == nil {
 		return
 	}
+	// Either there is none or it was cancelled (a finished leave): replace it.
 	w := newWorker(m, id)
 	m.workers[id] = w
 	go w.loop()
 }
 
 func (m *Manager) startWorker(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.startWorkerLocked(id)
+	for {
+		m.mu.Lock()
+		old, ok := m.workers[id]
+		if ok && old.ctx.Err() != nil {
+			// A cancelled worker is on its way out: let it finish, then replace it.
+			m.mu.Unlock()
+			<-old.done
+			m.mu.Lock()
+			if m.workers[id] == old {
+				delete(m.workers, id)
+			}
+		}
+		if cur, ok := m.workers[id]; ok && cur.ctx.Err() != nil {
+			m.mu.Unlock()
+			continue
+		}
+		m.startWorkerLocked(id)
+		m.mu.Unlock()
+		return
+	}
 }
 
 // Close stops every worker. A running job is interrupted through its
@@ -146,16 +168,16 @@ func (m *Manager) worker(id string) (*worker, error) {
 	return w, nil
 }
 
-// removeWorker stops and forgets an action's worker.
-func (m *Manager) removeWorker(id string) {
+// forgetWorker drops w from the table if it is still the current worker of
+// its action; it reports whether it did. It never waits.
+func (m *Manager) forgetWorker(w *worker) bool {
 	m.mu.Lock()
-	w, ok := m.workers[id]
-	delete(m.workers, id)
-	m.mu.Unlock()
-	if ok {
-		w.cancel()
-		<-w.done
+	defer m.mu.Unlock()
+	if m.workers[w.id] != w {
+		return false
 	}
+	delete(m.workers, w.id)
+	return true
 }
 
 func (m *Manager) backoff(failures int) time.Duration {

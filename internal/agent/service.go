@@ -70,7 +70,7 @@ func (m *Manager) UpdateSettings(ctx context.Context, s api.Settings) (api.Setti
 		if err := m.app.SetMachineName(name); err != nil {
 			return api.Settings{}, fmt.Errorf("%w: %v", api.ErrInvalid, err)
 		}
-		m.resetRunners(ctx)
+		m.resetRunners()
 	}
 	if s.LogLevel != "" {
 		if err := m.app.SetLogLevel(s.LogLevel); err != nil {
@@ -83,21 +83,9 @@ func (m *Manager) UpdateSettings(ctx context.Context, s api.Settings) (api.Setti
 	return m.Settings(ctx)
 }
 
-// resetRunners drops every worker's cached runner (through its job queue) so
-// the next run picks up the new machine name.
-func (m *Manager) resetRunners(ctx context.Context) {
-	m.mu.Lock()
-	ws := make([]*worker, 0, len(m.workers))
-	for _, w := range m.workers {
-		ws = append(ws, w)
-	}
-	m.mu.Unlock()
-	for _, w := range ws {
-		if _, err := w.do(ctx, func(context.Context) (any, error) { w.runner = nil; return nil, nil }); err != nil {
-			m.log.Warn("could not reset runner", "action", w.id, "err", err)
-		}
-	}
-}
+// resetRunners makes every worker rebuild its runner before its next run so
+// it picks up the new machine name; it never waits for a running sync.
+func (m *Manager) resetRunners() { m.nameGen.Add(1) }
 
 func (m *Manager) Profiles(ctx context.Context) ([]model.Profile, error) { return m.app.Profiles() }
 
@@ -227,14 +215,24 @@ func (m *Manager) LeaveAction(ctx context.Context, id string, force bool) error 
 		// The action is gone: nothing queued behind this job may run on it.
 		w.cancel()
 		w.runner = nil
+		m.workerGone(w) // even if the caller has stopped waiting
 		return nil, nil
 	})
-	if err != nil {
-		return err
+	if w.ctx.Err() != nil && m.ctx.Err() == nil {
+		// The worker was cancelled by a finished leave, whatever the caller saw.
+		m.workerGone(w)
+		if err == nil {
+			<-w.done
+		}
 	}
-	m.removeWorker(id)
-	m.bus.publish(api.Event{Type: api.EventActions, ActionID: id})
-	return nil
+	return err
+}
+
+// workerGone forgets a left action's worker and announces the change once.
+func (m *Manager) workerGone(w *worker) {
+	if m.forgetWorker(w) {
+		m.bus.publish(api.Event{Type: api.EventActions, ActionID: w.id})
+	}
 }
 
 // syncJob runs a sync-like call on the action's worker.
@@ -329,7 +327,11 @@ func (m *Manager) Pause(ctx context.Context, id string) error {
 		if err := m.app.SetPaused(id, true); err != nil {
 			return nil, err
 		}
-		w.setState(func(s *wstate) { s.state = api.StatePausedUser })
+		if w.retry != nil {
+			w.retry.Stop()
+			w.retry = nil
+		}
+		w.setState(func(s *wstate) { s.state, s.nextRun = api.StatePausedUser, time.Time{} })
 		return nil, nil
 	})
 	return err

@@ -17,6 +17,8 @@ var (
 	ErrInvalid = errors.New("invalid request")
 	// ErrUnsupported: the operation is not available on this system.
 	ErrUnsupported = errors.New("not supported on this system")
+	// ErrUnavailable: the agent is shutting down; retry later.
+	ErrUnavailable = errors.New("agent is shutting down")
 )
 
 // codes lists error codes with the sentinels they stand for, most specific first.
@@ -38,6 +40,7 @@ var codes = []struct {
 	{"not-found", http.StatusNotFound, []error{ErrNotFound, state.ErrNotFound, storage.ErrNotFound}},
 	{"invalid", http.StatusBadRequest, []error{ErrInvalid, engine.ErrInvalidInput}},
 	{"unsupported", http.StatusNotImplemented, []error{ErrUnsupported}},
+	{"unavailable", http.StatusServiceUnavailable, []error{ErrUnavailable}},
 }
 
 // Code returns the stable code of err ("internal" if none matches, "" for nil).
