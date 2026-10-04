@@ -6,7 +6,7 @@ Design: [docs/superpowers/specs/2026-10-01-s3-anysync-design.md](docs/superpower
 
 ## Status
 
-Plan 1 is done: the sync engine and a debug command line. The background agent (tray, schedules, file watching), the GUI and the installers come in later plans.
+Plans 1 and 2 are done: the sync engine, the command line, and the background agent (triggers, tray, notifications, IPC, autostart). The GUI and the installers come in Plans 3 and 4.
 
 ## Concepts
 
@@ -24,7 +24,12 @@ Plan 1 is done: the sync engine and a debug command line. The background agent (
 Requires Go 1.27.
 
 ```bash
+# macOS with the real tray icon (needs the Xcode command-line tools)
+CGO_ENABLED=1 go build -o bin/s3-anysync-agent ./cmd/agent
+# headless (no tray icon; also fine for servers and tests)
 CGO_ENABLED=0 go build -o bin/s3-anysync-agent ./cmd/agent
+# Windows (real tray, named pipe, HKCU Run)
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/s3-anysync-agent.exe ./cmd/agent
 ```
 
 ## Try it with two "machines" on one computer
@@ -54,6 +59,51 @@ export S3_ANYSYNC_DATA_DIR=/tmp/anysync-b
 
 Run `./bin/s3-anysync-agent` with no arguments for every command. Flags always come before arguments.
 
+## Running the agent
+
+```bash
+s3-anysync-agent run [--no-tray] [--verbose]
+```
+
+The agent syncs in the background, shows a status icon and menu in the tray (unless `--no-tray`, or the build has no tray), and sends desktop notifications for conflicts, pending deletions and repeated failures. Logs are JSON files in `<data dir>/logs/agent-YYYY-MM-DD.log`, kept 7 days; `--verbose` also writes them to stderr. The level follows the log level setting. Stop it with Quit in the tray, Ctrl-C or SIGTERM; it finishes running syncs, then exits.
+
+Only one process owns a data folder (`<data dir>/agent.lock`). If you start a second agent, or start one while a CLI command is running in-process, it exits with an error: retry in a moment.
+
+Autostart at login (macOS LaunchAgent, Windows HKCU Run entry; both run `<agent executable> run`):
+
+```bash
+s3-anysync-agent autostart enable|disable|status
+```
+
+Enabling never starts or stops the running agent. When the agent starts and autostart is enabled, it rewrites the entry so it always points at the current executable.
+
+Every other command talks to the running agent automatically (the same API the GUI will use), or works in-process when no agent runs. Useful commands: `status` (agent state, each action's state and last result), `pause ACTION_ID` and `resume ACTION_ID` (a pause survives restarts), `history [--limit N] ACTION_ID`.
+
+## Triggers
+
+Set them per action with `action rules` (without flags it shows the rules):
+
+- `--on-change` syncs after local files change, once they have been quiet for `--debounce SECONDS`.
+- `--schedule SPEC`: `none`, `every:MINUTES`, `daily:HH:MM`, `weekly:DAY@HH:MM` (0 = Sunday) or `cron:SPEC`.
+- When `--on-change` is on and there is no schedule, the agent also checks the bucket for remote changes every `--poll MINUTES`.
+- Triggers do nothing while the action is paused in any way: paused by you, on a conflict, or on pending deletions. Failed syncs are retried after 30 s, 2 min, 10 min, 30 min, then hourly (never for errors a retry cannot fix, such as a wrong passphrase, a missing folder or denied access).
+
+## Delete guard
+
+A sync that would delete at least 5 files AND at least 50% of the files synced so far, on either side, applies nothing. The action pauses (`paused-deletes`) and notifies you. Review and approve:
+
+```bash
+s3-anysync-agent approve-deletes ACTION_ID                          # lists the paths and a review digest
+s3-anysync-agent approve-deletes --yes --digest DIGEST ACTION_ID    # approves exactly what you reviewed
+```
+
+The approval needs the digest of the list you reviewed, so a list that changed in the meantime is refused. Per action: `action rules --delete-guard-files N --delete-guard-percent P ...`. Deletions you choose when resolving a conflict do not count.
+
+## Snapshot retention
+
+- Manual snapshots: the newest `--retention` (default 20) are kept.
+- Automatic snapshots (`auto-pre-sync`, `pre-resolve`, `pre-restore`): kept while they are among the newest 50 or younger than 7 days; those that hold files about to be deleted are kept at least 30 days.
+
 ## Tests
 
 ```bash
@@ -74,14 +124,14 @@ S3_TEST_ENDPOINT=http://localhost:9000 S3_TEST_KEY=minio S3_TEST_SECRET=minio123
 
 The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects.
 
-## Known limitations of Plan 1
+## Known limitations
 
-- No background agent or GUI yet: syncs run only when you invoke the CLI.
-- No mass-delete threshold yet: if a synced folder is emptied locally (but still exists), the deletes propagate (unless `--no-propagate-deletes`). A missing, renamed or unmounted item folder is different: it is refused with an error (see `ErrRootMissing`) instead of deleting.
-- Two processes using the same data dir are not mutually excluded (the machine id is shared); do not run two syncs of the same data dir at once.
 - `restore --to cloud` on a local-to-cloud machine is undone by that machine's next sync.
 - After a lost lock, other machines' syncs may fail until the original machine syncs again.
-- Re-pointing an item while a sync is running can race; do it when idle.
 - Whole files are held in memory while hashing, encrypting and transferring; large files are not supported.
 - The remote lock is renewed over the network; a long stall can let it expire and another machine take it.
 - Restore to local writes the snapshot's files into the mapped local paths (backing up what it overwrites); it is not an exact rollback and does not remove local files that are absent from the snapshot.
+- A missing, renamed or unmounted item folder is refused with an error (`ErrRootMissing`) instead of deleting; fix the folder or unmap and map the item again.
+- The macOS tray needs a CGO build; a CGO-off build runs headless. There is no GUI yet, so "Open" is hidden in the tray.
+- The Windows pieces (named pipe with its owner check, tray, HKCU Run autostart) are cross-compiled but UNTESTED on Windows; the pipe-owner check in particular has never run there.
+- The tray, desktop notifications and autostart have not been checked by hand on a real desktop yet (pending).

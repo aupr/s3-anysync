@@ -208,6 +208,8 @@ any ──user pause──▶ Paused(user) ──resume──▶ Idle
 
 ## 7. Agent
 
+Plan 2 implemented this section with the decisions in section 13 (own autostart instead of `kardianos/service`; CGO only for the tray).
+
 - **Autostart:** a per-user LaunchAgent on macOS, an HKCU Run entry on Windows. It is registered on the GUI's first run, and you can turn it off in Settings.
 - **Single instance:** a lock file in `<appdata>` plus a liveness check on the IPC socket.
 - **Tray:**
