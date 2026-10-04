@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -93,15 +94,7 @@ func runAgent(ctx context.Context, env agentEnv) error {
 		return err
 	}
 	defer m.Close()
-	// An enabled autostart entry may hold a stale executable path (the app
-	// was moved or updated); Enabled() cannot tell, so rewrite it.
-	if env.autostart != nil {
-		if on, err := env.autostart.Enabled(); err == nil && on {
-			if err := env.autostart.Enable(); err != nil {
-				log.Warn("could not refresh the autostart entry", "err", err)
-			}
-		}
-	}
+	refreshAutostart(env.autostart, log)
 
 	token, err := ipc.NewToken(env.dataDir)
 	if err != nil {
@@ -179,4 +172,30 @@ func guiOpener() func() error {
 		return nil
 	}
 	return func() error { return exec.Command(gui).Start() }
+}
+
+// refreshAutostart rewrites an enabled login item whose stored executable no
+// longer exists (the app was moved or updated). Dev runs (own data folder via
+// S3_ANYSYNC_DATA_DIR) never touch it: the entry belongs to the installed app.
+func refreshAutostart(a agent.Autostart, log *slog.Logger) {
+	if a == nil || os.Getenv("S3_ANYSYNC_DATA_DIR") != "" {
+		return
+	}
+	t, ok := a.(interface{ Target() (string, error) })
+	if !ok {
+		return
+	}
+	if on, err := a.Enabled(); err != nil || !on {
+		return
+	}
+	target, err := t.Target()
+	if err != nil || target == "" {
+		return
+	}
+	if _, err := os.Stat(target); !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if err := a.Enable(); err != nil {
+		log.Warn("could not refresh the autostart entry", "err", err)
+	}
 }

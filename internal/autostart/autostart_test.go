@@ -146,3 +146,41 @@ func TestCommandLineRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestPlistTarget(t *testing.T) {
+	for _, exe := range []string{
+		"/usr/local/bin/s3-anysync-agent",
+		"/Applications/s3 & sync <x>.app/Contents/MacOS/agent",
+	} {
+		got, err := plistTarget([]byte(plistContent(exe, []string{"run"})))
+		if err != nil || got != exe {
+			t.Errorf("plistTarget(%q) = %q, %v", exe, got, err)
+		}
+	}
+	if _, err := plistTarget([]byte("<plist><dict></dict></plist>")); err == nil {
+		t.Error("plist without ProgramArguments accepted")
+	}
+	if _, err := plistTarget([]byte("not xml <")); err == nil {
+		t.Error("garbage accepted")
+	}
+}
+
+func TestCommandLineTarget(t *testing.T) {
+	cases := map[string]string{
+		`C:\Apps\agent.exe run`:                    `C:\Apps\agent.exe`,
+		`"C:\Program Files\s3 sync\agent.exe" run`: `C:\Program Files\s3 sync\agent.exe`,
+		`  "C:\a b\x.exe"`:                         `C:\a b\x.exe`,
+		`agent.exe`:                                `agent.exe`,
+		``:                                         ``,
+	}
+	for in, want := range cases {
+		if got := commandLineTarget(in); got != want {
+			t.Errorf("commandLineTarget(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// what New() stores round-trips
+	exe := `C:\Program Files\s3 sync\agent.exe`
+	if got := commandLineTarget(commandLine(exe, []string{"run"})); got != exe {
+		t.Errorf("round trip = %q", got)
+	}
+}

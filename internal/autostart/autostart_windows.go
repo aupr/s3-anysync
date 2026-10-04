@@ -56,3 +56,16 @@ func (r *runEntry) Enabled() (bool, error) {
 	}
 	return err == nil, err
 }
+
+func (r *runEntry) Target() (string, error) {
+	k, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.QUERY_VALUE)
+	if err != nil {
+		return "", err
+	}
+	defer k.Close()
+	cmd, _, err := k.GetStringValue(RunValue)
+	if err != nil {
+		return "", err
+	}
+	return commandLineTarget(cmd), nil
+}

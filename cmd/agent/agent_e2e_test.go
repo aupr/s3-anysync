@@ -148,7 +148,10 @@ type fakeAutostart struct {
 	enabled bool
 	enables int
 	err     error
+	target  string // returned by Target
 }
+
+func (f *fakeAutostart) Target() (string, error) { return f.target, nil }
 
 func (f *fakeAutostart) Enable() error          { f.enables++; return f.err }
 func (f *fakeAutostart) Disable() error         { return nil }
@@ -173,25 +176,41 @@ func runBriefly(t *testing.T, env agentEnv) {
 	}
 }
 
-func TestAgentRefreshesEnabledAutostart(t *testing.T) {
+func TestAgentRefreshesAutostartOnlyWhenTargetIsGone(t *testing.T) {
 	short, err := os.MkdirTemp("", "sa")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(short)
-	on := &fakeAutostart{enabled: true}
-	runBriefly(t, agentEnv{dataDir: short, secrets: secrets.NewMemory(), notifier: notify.Nop{}, autostart: on, stderr: io.Discard})
-	if on.enables != 1 {
-		t.Fatalf("enabled autostart refreshed %d times, want 1", on.enables)
+	t.Setenv("S3_ANYSYNC_DATA_DIR", "")
+	run := func(f *fakeAutostart) {
+		runBriefly(t, agentEnv{dataDir: short, secrets: secrets.NewMemory(), notifier: notify.Nop{}, autostart: f, stderr: io.Discard})
 	}
-	off := &fakeAutostart{}
-	runBriefly(t, agentEnv{dataDir: short, secrets: secrets.NewMemory(), notifier: notify.Nop{}, autostart: off, stderr: io.Discard})
+	gone := filepath.Join(short, "no-such-agent")
+	stale := &fakeAutostart{enabled: true, target: gone}
+	run(stale)
+	if stale.enables != 1 {
+		t.Fatalf("stale entry refreshed %d times, want 1", stale.enables)
+	}
+	live := &fakeAutostart{enabled: true, target: short} // exists
+	run(live)
+	if live.enables != 0 {
+		t.Fatalf("entry with an existing target was rewritten")
+	}
+	off := &fakeAutostart{target: gone}
+	run(off)
 	if off.enables != 0 {
 		t.Fatalf("disabled autostart was enabled")
 	}
 	// A failing refresh is logged, not fatal.
-	bad := &fakeAutostart{enabled: true, err: errors.New("boom")}
-	runBriefly(t, agentEnv{dataDir: short, secrets: secrets.NewMemory(), notifier: notify.Nop{}, autostart: bad, stderr: io.Discard})
+	run(&fakeAutostart{enabled: true, target: gone, err: errors.New("boom")})
+	// A dev run (own data folder) never touches the login item.
+	t.Setenv("S3_ANYSYNC_DATA_DIR", short)
+	dev := &fakeAutostart{enabled: true, target: gone}
+	run(dev)
+	if dev.enables != 0 {
+		t.Fatalf("dev run rewrote the login item")
+	}
 }
 
 func TestAgentStopLeavesNoSocketAndReleasesLock(t *testing.T) {

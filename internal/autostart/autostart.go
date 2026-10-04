@@ -6,6 +6,8 @@ package autostart
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
+	"io"
 	"strings"
 )
 
@@ -14,6 +16,9 @@ type Manager interface {
 	Enable() error
 	Disable() error
 	Enabled() (bool, error)
+	// Target returns the executable the stored entry starts (an error when
+	// there is no entry), so a stale path can be noticed.
+	Target() (string, error)
 }
 
 // Label is the macOS LaunchAgent label (and plist file name).
@@ -83,4 +88,61 @@ func quoteArg(s string) string {
 	b.WriteString(strings.Repeat(`\`, slashes*2))
 	b.WriteByte('"')
 	return b.String()
+}
+
+// plistTarget returns the first ProgramArguments string of a LaunchAgent plist.
+func plistTarget(data []byte) (string, error) {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	var text strings.Builder
+	var lastKey string
+	inArray, inText := false, false
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return "", errors.New("plist has no ProgramArguments")
+		}
+		if err != nil {
+			return "", err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "key", "string":
+				inText = true
+				text.Reset()
+			case "array":
+				inArray = lastKey == "ProgramArguments"
+			}
+		case xml.CharData:
+			if inText {
+				text.Write(t)
+			}
+		case xml.EndElement:
+			switch t.Name.Local {
+			case "key":
+				lastKey, inText = text.String(), false
+			case "string":
+				if inArray {
+					return text.String(), nil
+				}
+				inText = false
+			}
+		}
+	}
+}
+
+// commandLineTarget returns the first token of a Windows command line.
+func commandLineTarget(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if strings.HasPrefix(cmd, `"`) {
+		rest := cmd[1:]
+		if i := strings.IndexByte(rest, '"'); i >= 0 {
+			return rest[:i]
+		}
+		return rest
+	}
+	if i := strings.IndexAny(cmd, " \t"); i >= 0 {
+		return cmd[:i]
+	}
+	return cmd
 }

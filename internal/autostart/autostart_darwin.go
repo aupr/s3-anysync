@@ -55,3 +55,11 @@ func (l *launchAgent) Enabled() (bool, error) {
 	}
 	return err == nil, err
 }
+
+func (l *launchAgent) Target() (string, error) {
+	data, err := os.ReadFile(l.path())
+	if err != nil {
+		return "", err
+	}
+	return plistTarget(data)
+}
