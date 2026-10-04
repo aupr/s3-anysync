@@ -317,12 +317,16 @@ func hasWrites(ops []Op) bool {
 // up local files about to be overwritten or deleted.
 func (r *Runner) guard(ctx context.Context, ms Mappings, ops []Op, reason string) error {
 	var remoteVictims []model.FileEntry
+	var deletes []string
 	localVictims := map[string]string{}
 	for _, op := range ops {
 		switch op.Kind {
 		case OpUpload, OpDeleteRemote:
 			if op.Remote != nil {
 				remoteVictims = append(remoteVictims, *op.Remote)
+				if op.Kind == OpDeleteRemote {
+					deletes = append(deletes, op.Path)
+				}
 			}
 		case OpDownload, OpDeleteLocal:
 			if op.Local != nil {
@@ -333,7 +337,7 @@ func (r *Runner) guard(ctx context.Context, ms Mappings, ops []Op, reason string
 		}
 	}
 	if len(remoteVictims) > 0 {
-		if _, err := r.writeSnapshot(ctx, reason, remoteVictims); err != nil {
+		if _, err := r.writeSnapshotSpec(ctx, snapshotSpec{reason: reason, files: remoteVictims, deletes: deletes}); err != nil {
 			return fmt.Errorf("safety snapshot: %w", err)
 		}
 	}

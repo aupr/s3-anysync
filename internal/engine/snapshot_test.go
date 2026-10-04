@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/niceit/s3-anysync/internal/model"
 	"github.com/niceit/s3-anysync/internal/storage"
@@ -156,6 +157,38 @@ func TestWriteSnapshotCleansUpOnFailure(t *testing.T) {
 	})
 }
 
+// putManualIndexes writes minimal manual snapshot indexes.
+func putManualIndexes(mem *storage.Memory, l Layout, tss ...string) {
+	for _, ts := range tss {
+		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{"ts":"`+ts+`","reason":"manual"}`), nil)
+	}
+}
+
+// putNewerAutomatic writes n automatic snapshot indexes newer than any test ts
+// below 2026-02, so that older automatic ones fall outside the newest
+// AutoSnapshotKeep.
+func putNewerAutomatic(mem *storage.Memory, l Layout, n int) {
+	for i := 0; i < n; i++ {
+		ts := time.Date(2026, 2, 1, 0, 0, i, 0, time.UTC).Format(snapshotTSLayout)
+		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{"reason":"auto-pre-sync"}`), nil)
+	}
+}
+
+func manualTSs(t *testing.T, r *Runner) []string {
+	t.Helper()
+	list, err := r.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range list {
+		if s.Reason == ReasonManual {
+			out = append(out, s.TS)
+		}
+	}
+	return out
+}
+
 func TestRetentionCorruptIndexAndOrphans(t *testing.T) {
 	r, mem, l := snapshotRunner(t, 2)
 	files := []model.FileEntry{{Path: "settings.json"}}
@@ -175,6 +208,9 @@ func TestRetentionCorruptIndexAndOrphans(t *testing.T) {
 	orphan := "20260102T000000Z"
 	mem.Put(ctx, l.SnapshotFile(orphan, "x"), []byte("x"), nil)
 	mem.Put(ctx, l.SnapshotsPrefix()+"junk.json", []byte("x"), nil)
+	// A corrupt index counts as automatic: it is pruned only when older than 7
+	// days and beyond the newest AutoSnapshotKeep automatic snapshots.
+	putNewerAutomatic(mem, l, AutoSnapshotKeep)
 	if err := r.applyRetention(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -183,9 +219,8 @@ func TestRetentionCorruptIndexAndOrphans(t *testing.T) {
 			t.Fatalf("not swept: %s", k)
 		}
 	}
-	list, err := r.ListSnapshots(ctx)
-	if err != nil || len(list) != 2 || list[0].TS != all[2] || list[1].TS != all[1] {
-		t.Fatalf("list = %+v, %v", list, err)
+	if got := manualTSs(t, r); len(got) != 2 || got[0] != all[2] || got[1] != all[1] {
+		t.Fatalf("manual = %v", got)
 	}
 	if _, err := mem.Head(ctx, l.SnapshotsPrefix()+"junk.json"); err != nil {
 		t.Fatalf("non-snapshot name must be left alone: %v", err)
@@ -194,16 +229,14 @@ func TestRetentionCorruptIndexAndOrphans(t *testing.T) {
 
 func TestRetentionCorruptIndexDoesNotShrinkWindow(t *testing.T) {
 	r, mem, l := snapshotRunner(t, 2)
-	for _, ts := range []string{"20260101T000000Z", "20260102T000000Z", "20260103T000000Z"} {
-		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{"ts":"`+ts+`"}`), nil)
-	}
+	putManualIndexes(mem, l, "20260102T000000Z", "20260103T000000Z")
 	mem.Put(ctx, l.SnapshotIndex("20260101T000000Z"), []byte("garbage"), nil)
+	putNewerAutomatic(mem, l, AutoSnapshotKeep) // pushes the corrupt (automatic) index out of the newest 50
 	if err := r.applyRetention(ctx); err != nil {
 		t.Fatal(err)
 	}
-	list, _ := r.ListSnapshots(ctx)
-	if len(list) != 2 || list[0].TS != "20260103T000000Z" || list[1].TS != "20260102T000000Z" {
-		t.Fatalf("list = %+v", list)
+	if got := manualTSs(t, r); len(got) != 2 || got[0] != "20260103T000000Z" || got[1] != "20260102T000000Z" {
+		t.Fatalf("manual = %v", got)
 	}
 	if _, err := mem.Head(ctx, l.SnapshotIndex("20260101T000000Z")); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("corrupt index not pruned: %v", err)
@@ -247,10 +280,7 @@ func TestListSnapshotsReturnsTransientErrors(t *testing.T) {
 func TestRetentionNeverDeletesProtectedSnapshot(t *testing.T) {
 	r, mem, l := snapshotRunner(t, 2)
 	// Existing snapshots are newer than the one just written (clock behind).
-	for _, ts := range []string{"20270101T000000Z", "20270102T000000Z", "20270103T000000Z"} {
-		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{}`), nil)
-	}
-	mem.Put(ctx, l.SnapshotIndex("20260101T000000Z"), []byte(`{}`), nil)
+	putManualIndexes(mem, l, "20270101T000000Z", "20270102T000000Z", "20270103T000000Z", "20260101T000000Z")
 	if err := r.applyRetentionKeeping(ctx, "20260101T000000Z"); err != nil {
 		t.Fatal(err)
 	}
@@ -280,9 +310,7 @@ func (d deleteFailStore) Delete(c context.Context, key string) error {
 
 func TestRetentionContinuesPastDeleteFailure(t *testing.T) {
 	r, mem, l := snapshotRunner(t, 1)
-	for _, ts := range []string{"20260101T000000Z", "20260102T000000Z", "20260103T000000Z"} {
-		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{}`), nil)
-	}
+	putManualIndexes(mem, l, "20260101T000000Z", "20260102T000000Z", "20260103T000000Z")
 	r.d.Storage = deleteFailStore{mem, "20260101T000000Z"}
 	err := r.applyRetention(ctx)
 	if err == nil || !strings.Contains(err.Error(), "delete refused") {
@@ -296,9 +324,7 @@ func TestRetentionContinuesPastDeleteFailure(t *testing.T) {
 func TestRetentionProtectsSeveralSnapshots(t *testing.T) {
 	r, mem, l := snapshotRunner(t, 2)
 	all := []string{"20260101T000000Z", "20260102T000000Z", "20260103T000000Z", "20260104T000000Z"}
-	for _, ts := range all {
-		mem.Put(ctx, l.SnapshotIndex(ts), []byte(`{}`), nil)
-	}
+	putManualIndexes(mem, l, all...)
 	if err := r.applyRetentionKeeping(ctx, all[3], all[0]); err != nil {
 		t.Fatal(err)
 	}

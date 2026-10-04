@@ -15,6 +15,9 @@ type Runner struct {
 	root   string
 	action model.Action
 	layout Layout
+	// kinds caches what retention needs to know about each snapshot; snapshot
+	// indexes never change, so entries stay valid until the snapshot is deleted.
+	kinds map[string]snapKind
 }
 
 // NewRunner returns a runner for action a stored under root.
