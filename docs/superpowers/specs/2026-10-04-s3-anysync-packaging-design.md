@@ -28,9 +28,9 @@ Out of scope: code signing and notarization, auto-update, Linux, CI.
   - `Info.plist`: bundle id, name, versions, `LSMinimumSystemVersion` 11.0, icon.
   - DMG via `hdiutil create` (contents: the .app and an `Applications` symlink); ZIP via `ditto -c -k --keepParent`.
 - Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0`):
-  - `s3-anysync.exe` GUI via `wails build -platform windows/amd64 -nsis` or `go build` with Wails tags as Wails requires; the NSIS script is the project's own (section 5), not the Wails default.
+  - `s3-anysync.exe` GUI via `wails build -platform windows/amd64` (cross-compiled, no `-nsis`); the installer is the project's own NSIS script (section 5), compiled with `makensis`, not the Wails default.
   - `s3-anysync-agent.exe` with `-ldflags "-H=windowsgui -X main.role=agent"`; `s3-anysync-cli.exe` with `-X main.role=cli`.
-  - Icon/version resources embedded in all three (Wails does it for the GUI; for the two agent builds a generated `.syso` via `github.com/tc-hib/go-winres` or `goversioninfo` — the plan picks one and pins it).
+  - Icon/version resources embedded in all three (Wails does it for the GUI; for the two agent builds a `.syso` generated with `github.com/tc-hib/go-winres` (run through `go run` at a pinned version; the generated files are build outputs, not committed).
 - Output in `dist/` (gitignored): `s3-anysync-<ver>-macos-universal.dmg`, `s3-anysync-<ver>-macos-universal.zip`, `s3-anysync-<ver>-windows-amd64-installer.exe`, `SHA256SUMS`.
 
 ## 4. Agent roles and autostart target
