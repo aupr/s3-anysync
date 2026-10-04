@@ -5,7 +5,7 @@ Status: approved 2026-10-04. Builds on `2026-10-01-s3-anysync-design.md` (sectio
 ## 1. Scope
 
 In scope:
-- agent API additions: profile edit and remove, cancel a running job, rule-edit conflict detection, `Action.ProfileID` over IPC, a distinct `protected-path` error code, token-rotation retry in the IPC client
+- agent API additions: a dev-only secrets file, profile edit and remove, cancel a running job, rule-edit conflict detection, `Action.ProfileID` over IPC, a distinct `protected-path` error code, token-rotation retry in the IPC client
 - the Wails v2 GUI (`cmd/gui`) and the React frontend (`frontend/`) with every screen in section 4
 - automated tests for the Go bindings and for frontend logic and key screens; a hand-check of every screen against a temporary data folder and MinIO
 
@@ -21,6 +21,7 @@ Out of scope (Plan 4 or later): the Windows `-H=windowsgui` build and console/CL
 | `UpdateRules(ctx, actionID, rules, expected time.Time)` | `expected` is the `Action.UpdatedAt` the editor loaded. If the action's current `UpdatedAt` (local copy refreshed from the bucket before the write) differs, nothing is written and the new code `conflict-edit` (HTTP 409, sentinel `engine.ErrEditConflict`) is returned. A zero `expected` is rejected as `invalid` (the CLI passes the value it just read). |
 | `ActionStatus.ProfileID` / `Action.ProfileID` | `ActionStatus.ProfileID` is always filled by the agent (today it can be lost over IPC because `model.Action.ProfileID` is `json:"-"`). The GUI uses only `ActionStatus.ProfileID`. |
 | `protected-path` code | `engine.ErrProtectedPath` gets its own code (HTTP 400) instead of `invalid`. |
+| Dev secrets file | Env `S3_ANYSYNC_SECRETS=file` makes the agent and CLI store secrets in `<data dir>/secrets.json` (mode 0600, written atomically) instead of the OS keychain. Any other non-empty value is an error at start. For development and tests only; README marks it insecure. Implemented as a `secrets.Store` in `internal/secrets`. |
 | IPC client 401 retry | On `unauthorized`, the client re-reads `ipc.token` once and retries the request; a second 401 is returned as `unauthorized`. |
 
 IPC routes: `PUT /profiles/{id}`, `DELETE /profiles/{id}`, `POST /actions/{id}/cancel`; `PUT /actions/{id}/rules` body becomes `{"rules":…, "expectedUpdatedAt":…}`. The CLI gains `profile-edit`, `profile-remove`, `cancel`; `rules` passes the `UpdatedAt` it read.
@@ -97,7 +98,7 @@ Unsaved forms (Rules, Profile) ask "Discard changes?" before navigating away.
 - Go: unit and `httptest` tests for every section 2 addition (incl. cancel during apply leaves the baseline and lock consistent, cancel is not a failure, `conflict-edit`, `in-use`, 401 retry). `cmd/gui` tests with a fake `api.Service` and fake launcher: binding pass-through and error encoding, auto-start, timeout, reconnect, event forwarding.
 - Shared schedule vectors run in Go and Vitest.
 - Vitest: error mapping, store reducer, schedule preview, profile form (blank secret keeps), rules form (`conflict-edit` flow incl. re-apply), conflict resolver (Apply gating, bulk-delete warning), delete review (fresh list).
-- Hand-check: `wails dev` with `S3_ANYSYNC_DATA_DIR` set to a temp folder, memory or file secrets as the test setup allows, and the `s3-anysync-minio` container; every screen in section 4 walked once in the browser pane. The real data folder, Keychain and login items are not touched.
+- Hand-check: `wails dev` with `S3_ANYSYNC_DATA_DIR` set to a temp folder, `S3_ANYSYNC_SECRETS=file`, and the `s3-anysync-minio` container; every screen in section 4 walked once in the browser pane. The real data folder, Keychain and login items are not touched.
 
 ## 7. Task order
 
