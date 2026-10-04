@@ -12,7 +12,7 @@ import { useLoad } from '../lib/useLoad'
 const levels = ['debug', 'info', 'warn', 'error']
 
 const describe = (e: unknown) => describeError(e).message
-const same = (a: Settings, b: Settings) => a.machineName === b.machineName && a.autostart === b.autostart && a.logLevel === b.logLevel
+const same = (a: Settings, b: Settings) => a.machineName.trim() === b.machineName.trim() && a.autostart === b.autostart && a.logLevel === b.logLevel
 
 export function SettingsScreen() {
   const { state, refresh } = useStore()
@@ -58,7 +58,7 @@ export function SettingsScreen() {
     setBusy(true)
     setError('')
     try {
-      const s = await api.updateSettings(form)
+      const s = await api.updateSettings({ ...form, machineName: form.machineName.trim() })
       if (!alive.current) return
       setSaved(s)
       setEdit(null)
@@ -67,8 +67,20 @@ export function SettingsScreen() {
     } catch (e) {
       if (!alive.current) return
       setError(describeError(e).message)
-      // The agent did not enable the login item: show what is really set.
-      if (form.autostart !== base.autostart) setEdit({ ...form, autostart: base.autostart })
+      // The agent applies autostart, then the name, then the log level, so a
+      // later step can fail after an earlier one took effect. Refetch to show
+      // what is really set; keep the user's other edits.
+      if (inFlight.current) {
+        try {
+          const fresh = await api.settings()
+          if (alive.current) {
+            setSaved(fresh)
+            setEdit({ ...form, autostart: fresh.autostart })
+          }
+        } catch {
+          // keep the inline error and the form as it is
+        }
+      }
     } finally {
       inFlight.current = false
       if (alive.current) setBusy(false)
@@ -102,7 +114,7 @@ export function SettingsScreen() {
         <dt className="text-zinc-500">Data folder</dt>
         <dd>
           <span className="break-all">{dir ?? '—'}</span>{' '}
-          <Button variant="ghost" aria-label="Open data folder" onClick={() => api.openDataFolder().catch(toast.error)}>Open</Button>
+          <Button variant="ghost" onClick={() => api.openDataFolder().catch(toast.error)}>Open folder</Button>
         </dd>
       </dl>
     </div>

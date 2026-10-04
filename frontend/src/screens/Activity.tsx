@@ -40,7 +40,7 @@ export function Activity() {
       </div>
       <p className="text-xs text-zinc-500">Live events since this window opened (the last 500). The full history is in the agent's log files.</p>
       {rows.length === 0 ? <EmptyState title="Nothing yet" /> : (
-        <table className="w-full">
+        <table aria-label="Recent activity" className="w-full">
           <thead><tr><th className={th}>Time</th><th className={th}>Action</th><th className={th}>Event</th></tr></thead>
           <tbody>
             {rows.map((a) => (
