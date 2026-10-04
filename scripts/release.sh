@@ -4,6 +4,9 @@
 #   scripts/release.sh --mac-only
 #   scripts/release.sh --windows-only
 # Never launches the built apps.
+# Cleaning is per platform: --mac-only removes only dist/*macos*, --windows-only
+# only dist/*windows*, all removes all of dist/. SHA256SUMS and the stage dir are
+# always rebuilt, and SHA256SUMS covers every dist/s3-anysync-* file present.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/lib.sh
@@ -14,13 +17,25 @@ mode=${1:-all}
 
 WAILS=${WAILS:-$HOME/go/bin/wails}
 need go npm git shasum
+case $mode in all | --mac-only) need lipo hdiutil ditto codesign /usr/libexec/PlistBuddy ;; esac
+# Windows tools are added here in Task 5 (all and --windows-only).
 [[ -x $WAILS ]] || die "wails CLI not found at $WAILS (go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0)"
 
-{ read -r VERSION; read -r NUMERIC; } < <(scripts/version.sh)
+ver=$(scripts/version.sh) || die "scripts/version.sh failed"
+VERSION=${ver%%$'\n'*}
+NUMERIC=${ver##*$'\n'}
+[[ -n $VERSION && -n $NUMERIC ]] || die "empty version"
 log "version $VERSION ($NUMERIC)"
 DIST=$PWD/dist
 STAGE=$DIST/stage
-rm -rf "$DIST"
+[[ -f go.mod && -d scripts && $DIST == "$PWD/dist" ]] || die "refusing to clean $DIST"
+trap 'rm -rf "$STAGE"' EXIT
+shopt -s nullglob
+case $mode in
+  all) rm -rf "$DIST" ;;
+  --mac-only) rm -rf "$DIST"/*macos* "$DIST/SHA256SUMS" "$STAGE" ;;
+  --windows-only) rm -rf "$DIST"/*windows* "$DIST/SHA256SUMS" "$STAGE" ;;
+esac
 mkdir -p "$STAGE"
 LDVER="-X main.version=$VERSION"
 
@@ -28,7 +43,6 @@ log "frontend"
 (cd frontend && npm ci && npm run build)
 
 build_mac() {
-  need lipo hdiutil ditto codesign /usr/libexec/PlistBuddy
   local flags="-mmacosx-version-min=13.0"
   export MACOSX_DEPLOYMENT_TARGET=13.0
   log "macOS GUI (universal)"
@@ -52,6 +66,7 @@ build_mac() {
   setkey CFBundleGetInfoString "s3-anysync $VERSION"
   # Ad-hoc signature over the whole bundle (Apple Silicon requires a signature;
   # this is not a Developer ID signature, Gatekeeper still asks on first launch).
+  codesign --force --sign - "$app/Contents/MacOS/s3-anysync-agent"
   codesign --force --deep --sign - "$app"
   codesign --verify --deep --strict "$app" || die "ad-hoc signature does not verify"
 
@@ -75,7 +90,6 @@ case $mode in
 esac
 
 log "checksums"
-(cd "$DIST" && shasum -a 256 s3-anysync-* > SHA256SUMS)
-rm -rf "$STAGE"
+(cd "$DIST" && files=(s3-anysync-*) && [[ ${#files[@]} -gt 0 ]] && shasum -a 256 "${files[@]}" > SHA256SUMS) || die "no artifacts to checksum"
 if [[ -x scripts/verify-dist.sh ]]; then scripts/verify-dist.sh "$DIST" "$VERSION"; fi
 log "done: $DIST"
