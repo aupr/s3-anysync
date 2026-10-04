@@ -6,7 +6,15 @@ Design: [docs/superpowers/specs/2026-10-01-s3-anysync-design.md](docs/superpower
 
 ## Status
 
-Plans 1 and 2 are done: the sync engine, the command line, and the background agent (triggers, tray, notifications, IPC, autostart). The desktop GUI (Plan 3) is implemented; the installers come in Plan 4.
+Plans 1 to 4 are done: the sync engine, the command line, the background agent (triggers, tray, notifications, IPC, autostart), the desktop GUI, and packaging (macOS app in a DMG and ZIP, Windows installer). See [docs/INSTALL.md](docs/INSTALL.md) and [docs/RELEASE.md](docs/RELEASE.md).
+
+## Install
+
+macOS 13 or newer (universal app) and Windows (amd64, per-user installer). The builds are unsigned, so Gatekeeper and SmartScreen warn on first launch. Steps, the command-line setup, upgrading and checksum verification: [docs/INSTALL.md](docs/INSTALL.md).
+
+## Releasing
+
+Maintainers build the release artifacts with `scripts/release.sh` on a Mac and work through the checklist in [docs/RELEASE.md](docs/RELEASE.md) before tagging.
 
 ## Concepts
 
@@ -31,6 +39,8 @@ CGO_ENABLED=0 go build -o bin/s3-anysync-agent ./cmd/agent
 # Windows (real tray, named pipe, HKCU Run)
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/s3-anysync-agent.exe ./cmd/agent
 ```
+
+Release artifacts (universal macOS app in a DMG and ZIP, Windows installer, `SHA256SUMS`) are built into `dist/` by `scripts/release.sh`; see [docs/RELEASE.md](docs/RELEASE.md). On Windows the installed executables are `s3-anysync.exe` (window), `s3-anysync-agent.exe` (background, no console window) and `s3-anysync-cli.exe` (commands; it refuses `run`).
 
 ## Try it with two "machines" on one computer
 
@@ -118,7 +128,7 @@ cd ../cmd/gui && wails build
 
 A plain `go build ./cmd/gui` on a fresh clone embeds an empty `cmd/gui/dist` (only `.keep`), so run the frontend build first to get a working GUI binary.
 
-On macOS `wails build` produces `cmd/gui/build/bin/s3-anysync.app`: place the agent binary in `s3-anysync.app/Contents/MacOS/` next to the GUI binary. On other platforms it must sit next to the GUI binary. Alternatively set `S3_ANYSYNC_AGENT` to its path.
+On macOS `wails build` produces `cmd/gui/build/bin/s3-anysync.app`: place the agent binary in `s3-anysync.app/Contents/MacOS/` next to the GUI binary (`scripts/release.sh` does this, builds it universal and ad-hoc signs it). On Windows the GUI looks for `s3-anysync-agent.exe` next to it. Alternatively set `S3_ANYSYNC_AGENT` to its path.
 
 Development: run the frontend tests with `cd frontend && npm install && npm test`. To run the GUI against a throwaway data folder, start an agent first, then the GUI from `cmd/gui`, both with the same data folder and the file secret store:
 
@@ -174,13 +184,13 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 - Restore to local writes the snapshot's files into the mapped local paths (backing up what it overwrites); it is not an exact rollback and does not remove local files that are absent from the snapshot.
 - A missing, renamed or unmounted item folder is refused with an error (`ErrRootMissing`) instead of deleting; fix the folder or unmap and map the item again.
 - The macOS tray needs a CGO build; a CGO-off build runs headless. "Open" in the tray starts the GUI only when its executable sits next to the agent; otherwise it is hidden.
-- The Windows build is a console app, so the HKCU Run autostart opens a console window until Plan 4 ships a `windowsgui` build.
 - Autostart is per user, not per data folder: it starts the default data folder. The agent rewrites the entry at start only when the stored executable no longer exists and `S3_ANYSYNC_DATA_DIR` is not set.
 - Items cannot contain the agent's own data folder (it would sync the agent's state): `item add`/`item map` refuse such a path, and a sync of an existing item that does is refused with an error.
 - On macOS a very large watched tree is only partially watched (cap: 5000 files; the rest is noticed by schedules, cloud polls and manual syncs).
 - A slow mass deletion spread over more than the watcher's MaxWait can stay under the delete guard threshold in each run (snapshots keep deletions for 30 days).
-- The Windows pieces (named pipe with its owner check, tray, HKCU Run autostart) are cross-compiled but UNTESTED on Windows; the pipe-owner check in particular has never run there.
-- The tray, desktop notifications and autostart have not been checked by hand on a real desktop yet (pending).
+- The Windows pieces (named pipe with its owner check, tray, HKCU Run autostart, the installer) are cross-compiled but UNTESTED on Windows; the pipe-owner check in particular has never run there. The tray, desktop notifications and autostart have not been checked by hand on a real desktop yet. Both are items of the release checklist.
+- The release builds are unsigned (macOS ad-hoc signed and not notarized, Windows not signed): Gatekeeper and SmartScreen warn on first launch.
+- The Windows installer and uninstaller stop the agent with `taskkill /F`, and the GUI executable's file version resource shows 0.0.0.
 - The GUI is not covered by automated end-to-end tests (only Go and frontend unit tests); the hand-check of the GUI is performed as part of the release checklist and is not automated.
 - Whenever `S3_ANYSYNC_DATA_DIR` is set, the Settings autostart switch is hidden and autostart is refused (CLI and GUI), so a development data folder never touches the real per-user login item.
 - If removing an action's passphrase fails after you leave the action, a stale worker can stay in the agent until it restarts.

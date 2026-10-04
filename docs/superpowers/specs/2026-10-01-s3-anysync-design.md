@@ -295,9 +295,9 @@ Each phase ends in something runnable.
 2. **Agent:** triggers, the action manager and state machine, IPC with events, tray, autostart, notifications.
 3. **GUI:** every screen in section 9.
 4. **Packaging:**
-   - macOS: an unsigned `.app` bundle with the agent in `Contents/MacOS`.
-   - Windows: the Wails NSIS per-user installer.
-   - Install notes for Gatekeeper and SmartScreen.
+   - macOS: a universal (arm64 + amd64) ad-hoc signed `.app` with the agent in `Contents/MacOS`, shipped in a DMG and a ZIP (minimum macOS 13).
+   - Windows: a per-user NSIS installer with three executables (`s3-anysync.exe`, `s3-anysync-agent.exe`, `s3-anysync-cli.exe`).
+   - Install notes for Gatekeeper and SmartScreen (`docs/INSTALL.md`) and a release checklist (`docs/RELEASE.md`).
 
 ## 13. Plan 2 decisions (agent)
 
