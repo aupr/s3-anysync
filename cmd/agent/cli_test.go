@@ -155,6 +155,7 @@ func TestExplain(t *testing.T) {
 		{storage.ErrLocked, "another machine is syncing this action; try again in a minute"},
 		{storage.ErrLockLost, "lock"},
 		{engine.ErrRootMissing, "unmap the item"},
+		{engine.ErrConflictChanged, "list them again with `conflicts` and choose again"},
 	}
 	for _, c := range cases {
 		wrapped := fmt.Errorf("sync: %w", c.err)

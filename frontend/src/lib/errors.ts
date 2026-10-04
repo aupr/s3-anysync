@@ -5,6 +5,7 @@ const messages: Record<string, string> = {
   locked: 'Another machine is syncing this action. Try again in a minute.',
   'not-found': 'It no longer exists; it may have been removed elsewhere.',
   'conflict-pending': 'This action has conflicts. Resolve them first.',
+  'conflict-changed': 'The conflicts changed since you looked at them. Review them again.',
   'conflict-edit': 'The action was changed elsewhere while you edited it.',
   'passphrase-missing': 'This action is encrypted. Enter its passphrase.',
   decrypt: 'The passphrase is wrong or the cloud data is damaged.',

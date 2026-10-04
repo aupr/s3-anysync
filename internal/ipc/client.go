@@ -296,9 +296,9 @@ func (c *Client) ConflictDetail(ctx context.Context, id, path string) (engine.Co
 	return v, c.call(ctx, "GET", "/actions/"+esc(id)+"/conflicts/diff?path="+url.QueryEscape(path), nil, &v)
 }
 
-func (c *Client) Resolve(ctx context.Context, id string, choices map[string]model.Side) (model.SyncResult, error) {
+func (c *Client) Resolve(ctx context.Context, id string, req api.ResolveRequest) (model.SyncResult, error) {
 	var v model.SyncResult
-	return v, c.call(ctx, "POST", "/actions/"+esc(id)+"/resolve", map[string]any{"choices": choices}, &v)
+	return v, c.call(ctx, "POST", "/actions/"+esc(id)+"/resolve", req, &v)
 }
 
 func (c *Client) History(ctx context.Context, id string, limit int) ([]model.HistoryEntry, error) {

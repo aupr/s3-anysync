@@ -138,7 +138,7 @@ func conflictOnSettings(t *testing.T, f storeFactory) (*harness, *machine, *mach
 
 func resolveSettings(t *testing.T, b *machine, side model.Side) model.SyncResult {
 	t.Helper()
-	res, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": side})
+	res, err := resolveCur(b.runner, map[string]model.Side{"settings.json": side})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,28 +289,28 @@ func scenarioResolveStrict(t *testing.T, f storeFactory) {
 			t.Fatalf("%s: saved conflicts = %+v", what, saved)
 		}
 	}
-	_, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal})
+	_, err := resolveCur(b.runner, map[string]model.Side{"settings.json": model.SideLocal})
 	if err == nil || !strings.Contains(err.Error(), "snippets/go.json") || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("partial choice: want error naming snippets/go.json, got %v", err)
 	}
 	fresh("partial")
-	_, err = b.runner.Resolve(ctx, map[string]model.Side{
+	_, err = resolveCur(b.runner, map[string]model.Side{
 		"settings.json": model.SideLocal, "snippets/go.json": model.SideLocal, "nope.json": model.SideCloud})
 	if err == nil || !strings.Contains(err.Error(), "nope.json") || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("unknown path: want error naming nope.json, got %v", err)
 	}
 	fresh("unknown")
-	if _, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": "both", "snippets/go.json": model.SideLocal}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := resolveCur(b.runner, map[string]model.Side{"settings.json": "both", "snippets/go.json": model.SideLocal}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("unknown side: want ErrInvalidInput, got %v", err)
 	}
 	fresh("bad side")
 
 	// all conflicts chosen: resolves, then nothing is left to resolve.
-	res, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal, "snippets/go.json": model.SideCloud})
+	res, err := resolveCur(b.runner, map[string]model.Side{"settings.json": model.SideLocal, "snippets/go.json": model.SideCloud})
 	if err != nil || res.Outcome != model.OutcomeOK {
 		t.Fatalf("resolve: %+v, %v", res, err)
 	}
-	_, err = b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal})
+	_, err = resolveCur(b.runner, map[string]model.Side{"settings.json": model.SideLocal})
 	if err == nil || !strings.Contains(err.Error(), "no unresolved conflicts") || !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("want 'no unresolved conflicts', got %v", err)
 	}
@@ -329,7 +329,7 @@ func scenarioResolveNewConflict(t *testing.T, f storeFactory) {
 	expectCounts(t, a.sync(), 1, 0, 0, 0)
 	b.write("app/snippets/go.json", "go-b")
 
-	res, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal})
+	res, err := resolveCur(b.runner, map[string]model.Side{"settings.json": model.SideLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func scenarioResolveNewConflict(t *testing.T, f storeFactory) {
 	if got := b.read("app/settings.json"); got != `{"v":333}` {
 		t.Fatalf("local changed while paused: %q", got)
 	}
-	res, err = b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal, "snippets/go.json": model.SideLocal})
+	res, err = resolveCur(b.runner, map[string]model.Side{"settings.json": model.SideLocal, "snippets/go.json": model.SideLocal})
 	if err != nil || res.Outcome != model.OutcomeOK {
 		t.Fatalf("second resolve: %+v, %v", res, err)
 	}
@@ -432,7 +432,7 @@ func scenarioResolveIgnoresUnreviewedContent(t *testing.T, f storeFactory) {
 	a.write("app/settings.json", `{"v":3}`)
 	expectCounts(t, a.sync(), 1, 0, 0, 0)
 
-	res, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideLocal})
+	res, err := resolveCur(b.runner, map[string]model.Side{"settings.json": model.SideLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestResolveDeferredKeepsConflictSaved(t *testing.T) {
 			b.write("app/settings.json", "edited during resolve")
 		}
 	}
-	res, err := b.runner.Resolve(ctx, map[string]model.Side{"settings.json": model.SideCloud})
+	res, err := resolveCur(b.runner, map[string]model.Side{"settings.json": model.SideCloud})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,4 +628,111 @@ func TestLocalEditBeforeDeleteIsDeferred(t *testing.T) {
 	if res := b.sync(); res.Outcome != model.OutcomeConflict {
 		t.Fatalf("want conflict on the next run, got %+v", res)
 	}
+}
+
+// reviewedOf is what a client that just listed the conflicts would send.
+func reviewedOf(t testing.TB, r *Runner) map[string]ConflictVersion {
+	t.Helper()
+	saved, err := r.Conflicts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]ConflictVersion{}
+	for _, c := range saved {
+		out[c.Path] = versionOf(c)
+	}
+	return out
+}
+
+// resolveCur resolves against the conflicts as currently saved.
+func resolveCur(r *Runner, choices map[string]model.Side) (model.SyncResult, error) {
+	saved, err := r.Conflicts()
+	if err != nil {
+		return model.SyncResult{}, err
+	}
+	rev := map[string]ConflictVersion{}
+	for _, c := range saved {
+		rev[c.Path] = versionOf(c)
+	}
+	return r.Resolve(ctx, choices, rev)
+}
+
+func TestResolveReviewedVersions(t *testing.T) {
+	both := map[string]model.Side{"settings.json": model.SideLocal, "snippets/go.json": model.SideCloud}
+	// assertUntouched: nothing applied, conflicts still saved
+	assertUntouched := func(t *testing.T, h *harness, b *machine, act model.Action, local string) {
+		t.Helper()
+		if got, _ := cloudBody(t, h, act, "settings.json"); got != `{"v":2}` {
+			t.Fatalf("cloud changed: %q", got)
+		}
+		if local == "" {
+			if b.exists("app/settings.json") {
+				t.Fatal("local file reappeared")
+			}
+		} else if got := b.read("app/settings.json"); got != local {
+			t.Fatalf("local changed: %q", got)
+		}
+		if saved, _ := b.runner.Conflicts(); len(saved) != 2 {
+			t.Fatalf("saved conflicts consumed: %+v", saved)
+		}
+	}
+	t.Run("matching", func(t *testing.T) {
+		_, _, b, _ := twoConflicts(t, memFactory(storage.NewMemory()))
+		res, err := b.runner.Resolve(ctx, both, reviewedOf(t, b.runner))
+		if err != nil || res.Outcome != model.OutcomeOK {
+			t.Fatalf("%+v, %v", res, err)
+		}
+	})
+	t.Run("stale hash", func(t *testing.T) {
+		h, _, b, act := twoConflicts(t, memFactory(storage.NewMemory()))
+		old := reviewedOf(t, b.runner)
+		b.write("app/settings.json", `{"v":444}`)
+		if res := b.sync(); res.Outcome != model.OutcomeConflict {
+			t.Fatalf("want conflict, got %+v", res)
+		}
+		_, err := b.runner.Resolve(ctx, both, old)
+		if !errors.Is(err, ErrConflictChanged) || !strings.Contains(err.Error(), "settings.json") || strings.Contains(err.Error(), "snippets/go.json") {
+			t.Fatalf("want ErrConflictChanged naming only settings.json, got %v", err)
+		}
+		assertUntouched(t, h, b, act, `{"v":444}`)
+		// choosing again on the fresh list works
+		if res, err := b.runner.Resolve(ctx, both, reviewedOf(t, b.runner)); err != nil || res.Outcome != model.OutcomeOK {
+			t.Fatalf("fresh resolve: %+v, %v", res, err)
+		}
+	})
+	t.Run("side became nil", func(t *testing.T) {
+		h, _, b, act := twoConflicts(t, memFactory(storage.NewMemory()))
+		old := reviewedOf(t, b.runner)
+		b.remove("app/settings.json")
+		if res := b.sync(); res.Outcome != model.OutcomeConflict {
+			t.Fatalf("want conflict, got %+v", res)
+		}
+		_, err := b.runner.Resolve(ctx, both, old)
+		if !errors.Is(err, ErrConflictChanged) {
+			t.Fatalf("want ErrConflictChanged, got %v", err)
+		}
+		assertUntouched(t, h, b, act, "")
+	})
+	t.Run("missing and nil and extra entries", func(t *testing.T) {
+		h, _, b, act := twoConflicts(t, memFactory(storage.NewMemory()))
+		cur := reviewedOf(t, b.runner)
+		partial := map[string]ConflictVersion{"settings.json": cur["settings.json"]}
+		_, err := b.runner.Resolve(ctx, both, partial)
+		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "reviewed version missing for: snippets/go.json") {
+			t.Fatalf("missing entry: got %v", err)
+		}
+		for name, rev := range map[string]map[string]ConflictVersion{"nil": nil, "empty": {}} {
+			if _, err := b.runner.Resolve(ctx, both, rev); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("%s reviewed: want ErrInvalidInput, got %v", name, err)
+			}
+		}
+		extra := map[string]ConflictVersion{"nope.json": {}}
+		for k, v := range cur {
+			extra[k] = v
+		}
+		if _, err := b.runner.Resolve(ctx, both, extra); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "nope.json") {
+			t.Fatalf("extra entry: got %v", err)
+		}
+		assertUntouched(t, h, b, act, `{"v":333}`)
+	})
 }

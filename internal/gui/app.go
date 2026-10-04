@@ -189,9 +189,9 @@ func (a *App) ConflictDetail(actionID, path string) (engine.ConflictDetail, erro
 	})
 }
 
-func (a *App) Resolve(actionID string, choices map[string]model.Side) (model.SyncResult, error) {
+func (a *App) Resolve(actionID string, req api.ResolveRequest) (model.SyncResult, error) {
 	return do(a, func(c context.Context, s api.Service) (model.SyncResult, error) {
-		return s.Resolve(c, actionID, choices)
+		return s.Resolve(c, actionID, req)
 	})
 }
 

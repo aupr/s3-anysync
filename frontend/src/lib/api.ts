@@ -1,6 +1,6 @@
 import { bindings } from './bridge'
 import type {
-  Action, ActionStatus, ConflictDetail, Conflict, ConnState, CreateActionRequest, Direction, HistoryEntry, Item,
+  Action, ActionStatus, ConflictDetail, Conflict, ConflictVersion, ConnState, CreateActionRequest, Direction, HistoryEntry, Item,
   JoinActionRequest, NewItem, PendingDeletes, ProbeResult, Profile, RestoreRequest, RestoreResult, Rules, Schedule,
   Settings, Side, SnapshotInfo, Status, SyncResult,
 } from './types'
@@ -73,7 +73,7 @@ export const api = {
   restore: (id: string, req: RestoreRequest) => call<RestoreResult>('Restore', id, req),
   conflicts: (id: string) => call<Conflict[] | null>('Conflicts', id).then(orEmpty),
   conflictDetail: (id: string, path: string) => call<ConflictDetail>('ConflictDetail', id, path),
-  resolve: (id: string, choices: Record<string, Side>) => call<SyncResult>('Resolve', id, choices),
+  resolve: (id: string, choices: Record<string, Side>, reviewed: Record<string, ConflictVersion>) => call<SyncResult>('Resolve', id, { choices, reviewed }),
   history: (id: string, limit: number) => call<HistoryEntry[] | null>('History', id, limit).then(orEmpty),
   previewSchedule: (s: Schedule) => call<string[] | null>('PreviewSchedule', s).then(orEmpty),
   pickFile: (title: string) => call<string>('PickFile', title),

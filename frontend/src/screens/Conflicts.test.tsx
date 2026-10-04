@@ -50,7 +50,10 @@ test('apply needs every choice and warns about deletions before resolving', asyn
   expect(within(dlg).getByText(/deleted in the cloud/)).toBeInTheDocument()
   bindings.Resolve.mockResolvedValue(okResult)
   fireEvent.click(within(dlg).getByText('Resolve'))
-  await waitFor(() => expect(bindings.Resolve).toHaveBeenCalledWith('a1', { 'a.json': 'local', 'gone.json': 'local' }))
+  await waitFor(() => expect(bindings.Resolve).toHaveBeenCalledWith('a1', {
+    choices: { 'a.json': 'local', 'gone.json': 'local' },
+    reviewed: { 'a.json': { localHash: 'abcdef0123', remoteHash: 'abcdef0123' }, 'gone.json': { localHash: '', remoteHash: 'abcdef0123' } },
+  }))
   expect(await screen.findByText(/Resolved: uploaded 1/)).toBeInTheDocument()
 })
 
@@ -71,7 +74,10 @@ test('without deletions Apply resolves directly and a failure keeps the choices'
   bindings.Resolve.mockRejectedValueOnce(JSON.stringify({ code: 'locked', message: 'busy' }))
   fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
   expect(await screen.findByText('Another machine is syncing this action. Try again in a minute.')).toBeInTheDocument()
-  expect(bindings.Resolve).toHaveBeenCalledWith('a1', { 'a.json': 'cloud' })
+  expect(bindings.Resolve).toHaveBeenCalledWith('a1', {
+    choices: { 'a.json': 'cloud' },
+    reviewed: { 'a.json': { localHash: 'abcdef0123', remoteHash: 'abcdef0123' } },
+  })
   expect(screen.getByLabelText('Keep cloud a.json')).toBeChecked()
   expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
 })
@@ -227,6 +233,31 @@ test('a conflict outcome whose reload fails keeps Apply off and shows Retry', as
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   expect(await screen.findByText('n.json')).toBeInTheDocument()
   expect(screen.getByLabelText('Keep local a.json')).not.toBeChecked()
+})
+
+test('conflict-changed explains, clears the choices, reloads and keeps Apply off until the new list is shown', async () => {
+  await openConflicts([two[0]], 1)
+  fireEvent.click(screen.getByLabelText('Keep local a.json'))
+  bindings.Resolve.mockRejectedValueOnce(JSON.stringify({ code: 'conflict-changed', message: 'the conflicts changed since they were reviewed: a.json' }))
+  const d = deferred<unknown>()
+  bindings.Conflicts.mockReturnValueOnce(d.promise)
+  fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+  expect(await screen.findByText(/conflicts changed since you looked/)).toBeInTheDocument()
+  expect(await screen.findByText('Reloading the conflicts…')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
+  expect(screen.getByLabelText('Keep local a.json')).not.toBeChecked()
+  const fresh = { ...two[0], local: { ...f('a.json'), hash: 'new-local' } }
+  await act(async () => { d.resolve([fresh]) })
+  expect(screen.queryByText('Reloading the conflicts…')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
+  fireEvent.click(screen.getByLabelText('Keep cloud a.json'))
+  bindings.Resolve.mockResolvedValueOnce(okResult)
+  fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+  // the reviewed versions come from the freshly loaded list
+  await waitFor(() => expect(bindings.Resolve).toHaveBeenLastCalledWith('a1', {
+    choices: { 'a.json': 'cloud' },
+    reviewed: { 'a.json': { localHash: 'new-local', remoteHash: 'abcdef0123' } },
+  }))
 })
 
 test('an invalid failure with a failing reload also voids the choices', async () => {

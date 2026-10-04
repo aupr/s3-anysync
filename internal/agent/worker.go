@@ -260,7 +260,7 @@ func (w *worker) runSync(ctx context.Context, f func(context.Context, *engine.Ru
 	w.setRunning(true)
 	res, err := w.callEngine(ctx, f, r)
 	w.setRunning(false)
-	if errors.Is(err, engine.ErrInvalidInput) {
+	if errors.Is(err, engine.ErrInvalidInput) || errors.Is(err, engine.ErrConflictChanged) {
 		// The caller's request was wrong; the action did not fail.
 		return res, err
 	}

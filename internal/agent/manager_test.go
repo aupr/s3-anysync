@@ -165,7 +165,10 @@ func TestConflictPausesUntilResolved(t *testing.T) {
 	if d, err := b.m.ConflictDetail(ctx, act.ID, "snippets/s00.json"); err != nil || d.LocalText != "from B!" {
 		t.Fatalf("detail = %+v, %v", d, err)
 	}
-	res, err = b.m.Resolve(ctx, act.ID, map[string]model.Side{"snippets/s00.json": model.SideLocal})
+	res, err = b.m.Resolve(ctx, act.ID, api.ResolveRequest{
+		Choices:  map[string]model.Side{"snippets/s00.json": model.SideLocal},
+		Reviewed: reviewedOf(t, b, act.ID),
+	})
 	if err != nil || res.Uploaded != 1 {
 		t.Fatalf("resolve = %+v, %v", res, err)
 	}

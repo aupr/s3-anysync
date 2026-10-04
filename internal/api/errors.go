@@ -41,6 +41,7 @@ var codes = []struct {
 	{"no-such-bucket", http.StatusUnprocessableEntity, []error{storage.ErrNoSuchBucket}},
 	{"in-use", http.StatusConflict, []error{app.ErrInUse}},
 	{"conflict-edit", http.StatusConflict, []error{engine.ErrEditConflict}},
+	{"conflict-changed", http.StatusConflict, []error{engine.ErrConflictChanged}},
 	{"cancelled", http.StatusConflict, []error{ErrCancelled}},
 	{"busy", http.StatusConflict, []error{datalock.ErrBusy}},
 	{"not-found", http.StatusNotFound, []error{ErrNotFound, state.ErrNotFound, storage.ErrNotFound}},

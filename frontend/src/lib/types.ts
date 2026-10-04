@@ -75,6 +75,8 @@ export interface Profile {
 export interface ProbeResult { list: boolean; put: boolean; get: boolean; delete: boolean; conditionalWrites: boolean }
 export interface FileEntry { path: string; hash: string; size: number; mtime: number; etag?: string; writer?: string }
 export interface Conflict { path: string; local: FileEntry | null; remote: FileEntry | null; detectedAt: string }
+/** The content hashes of a conflict's two sides as the user saw them; '' for a deleted side. */
+export interface ConflictVersion { localHash: string; remoteHash: string }
 export interface ConflictDetail { conflict: Conflict; localText: string; remoteText: string; binary: boolean; tooLarge: boolean }
 export interface SnapshotInfo { ts: string; reason: string; machineId: string; createdAt: string; files: FileEntry[] | null; deletes?: string[] }
 export interface SyncResult {

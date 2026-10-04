@@ -58,7 +58,7 @@ export function RemoveItem(arg1:string,arg2:string):Promise<void>;
 
 export function RemoveProfile(arg1:string):Promise<void>;
 
-export function Resolve(arg1:string,arg2:Record<string, model.Side>):Promise<model.SyncResult>;
+export function Resolve(arg1:string,arg2:api.ResolveRequest):Promise<model.SyncResult>;
 
 export function Restore(arg1:string,arg2:api.RestoreRequest):Promise<engine.RestoreResult>;
 

@@ -25,6 +25,9 @@ var (
 	// ErrInvalidInput: the caller's request is wrong (not a sync failure):
 	// an unknown side, nothing to resolve or approve, a missing choice.
 	ErrInvalidInput = errors.New("invalid input")
+	// ErrConflictChanged: the saved conflicts no longer hold the content the
+	// user reviewed; nothing was applied.
+	ErrConflictChanged = errors.New("the conflicts changed since they were reviewed")
 	// ErrEditConflict: the action changed (on any machine) after the editor loaded it.
 	ErrEditConflict = errors.New("the action was changed elsewhere since it was loaded")
 	// ErrRootMissing: an item's local folder (or a file item's parent folder)

@@ -271,8 +271,10 @@ func (m *Manager) Sync(ctx context.Context, id string) (model.SyncResult, error)
 	return m.syncJob(ctx, id, func(c context.Context, r *engine.Runner) (model.SyncResult, error) { return r.Sync(c) })
 }
 
-func (m *Manager) Resolve(ctx context.Context, id string, choices map[string]model.Side) (model.SyncResult, error) {
-	return m.syncJob(ctx, id, func(c context.Context, r *engine.Runner) (model.SyncResult, error) { return r.Resolve(c, choices) })
+func (m *Manager) Resolve(ctx context.Context, id string, req api.ResolveRequest) (model.SyncResult, error) {
+	return m.syncJob(ctx, id, func(c context.Context, r *engine.Runner) (model.SyncResult, error) {
+		return r.Resolve(c, req.Choices, req.Reviewed)
+	})
 }
 
 func (m *Manager) ApproveDeletes(ctx context.Context, id string, reviewed []string) (model.SyncResult, error) {

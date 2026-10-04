@@ -146,6 +146,8 @@ func explain(err error) string {
 		return "  hint: this machine lost the cloud lock during the run (it took too long or the connection dropped); nothing is corrupted, run the sync again."
 	case errors.Is(err, engine.ErrEditConflict):
 		return "  hint: the action was changed (maybe on another machine) while you edited it; run the command again."
+	case errors.Is(err, engine.ErrConflictChanged):
+		return "  hint: the conflicts changed since you looked at them; list them again with `conflicts` and choose again."
 	case errors.Is(err, errAgentRunning):
 		return "  hint: another agent, or a CLI command running in-process, holds this data folder; retry in a moment (stop the other agent first if it keeps running)."
 	case errors.Is(err, datalock.ErrBusy):
@@ -1006,13 +1008,26 @@ func (c *cli) resolve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *all == "" && len(each) == 0 {
+		return errors.New("nothing to resolve: pass --all local|cloud or --path PATH=local|cloud")
+	}
+	// The versions the choices are made on: exactly the list loaded here.
+	list, err := c.svc.Conflicts(ctx, pos[0])
+	if err != nil {
+		return err
+	}
 	choices := map[string]model.Side{}
-	if *all != "" {
-		list, err := c.svc.Conflicts(ctx, pos[0])
-		if err != nil {
-			return err
+	reviewed := make(map[string]api.ConflictVersion, len(list))
+	for _, cf := range list {
+		var v api.ConflictVersion
+		if cf.Local != nil {
+			v.LocalHash = cf.Local.Hash
 		}
-		for _, cf := range list {
+		if cf.Remote != nil {
+			v.RemoteHash = cf.Remote.Hash
+		}
+		reviewed[cf.Path] = v
+		if *all != "" {
 			choices[cf.Path] = model.Side(*all)
 		}
 	}
@@ -1023,10 +1038,7 @@ func (c *cli) resolve(ctx context.Context, args []string) error {
 		}
 		choices[p] = model.Side(side)
 	}
-	if *all == "" && len(each) == 0 {
-		return errors.New("nothing to resolve: pass --all local|cloud or --path PATH=local|cloud")
-	}
-	res, err := c.svc.Resolve(ctx, pos[0], choices)
+	res, err := c.svc.Resolve(ctx, pos[0], api.ResolveRequest{Choices: choices, Reviewed: reviewed})
 	if err != nil {
 		return err
 	}

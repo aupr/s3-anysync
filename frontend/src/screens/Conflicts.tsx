@@ -82,7 +82,9 @@ export function Conflicts({ id }: { id: string }) {
     busyRef.current = true
     setBusy(true)
     try {
-      const r = await api.resolve(id, choices)
+      // The versions the choices were made on: exactly the list on screen.
+      const reviewed = Object.fromEntries(list.map((c) => [c.path, { localHash: c.local?.hash ?? '', remoteHash: c.remote?.hash ?? '' }]))
+      const r = await api.resolve(id, choices, reviewed)
       if (r.outcome !== 'ok') setStaleList(list)
       if (r.outcome === 'conflict') {
         toast.show('New conflicts appeared while resolving; review them again.')
@@ -100,7 +102,7 @@ export function Conflicts({ id }: { id: string }) {
       }
     } catch (e) {
       const code = toAgentError(e).code
-      if (code === 'invalid' || code === 'not-found') {
+      if (code === 'invalid' || code === 'not-found' || code === 'conflict-changed') {
         // The saved conflicts changed since the user looked: the choices no longer fit.
         setStaleList(list)
         toast.show('The conflicts changed since you looked. Review them again.', { details: toAgentError(e).message, tone: 'error' })

@@ -26,6 +26,7 @@ func TestCodesRoundTrip(t *testing.T) {
 		storage.ErrNoSuchBucket:     "no-such-bucket",
 		app.ErrInUse:                "in-use",
 		engine.ErrEditConflict:      "conflict-edit",
+		engine.ErrConflictChanged:   "conflict-changed",
 		datalock.ErrBusy:            "busy",
 		state.ErrNotFound:           "not-found",
 		storage.ErrNotFound:         "not-found",

@@ -198,13 +198,11 @@ func (s *Server) routes() http.Handler {
 		return svc.ConflictDetail(r.Context(), id(r), r.URL.Query().Get("path"))
 	})
 	h("POST /actions/{id}/resolve", func(r *http.Request) (any, error) {
-		var in struct {
-			Choices map[string]model.Side `json:"choices"`
-		}
+		var in api.ResolveRequest
 		if err := decode(r, &in); err != nil {
 			return nil, err
 		}
-		return svc.Resolve(r.Context(), id(r), in.Choices)
+		return svc.Resolve(r.Context(), id(r), in)
 	})
 	h("GET /actions/{id}/history", func(r *http.Request) (any, error) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))

@@ -166,7 +166,7 @@ func scenarioResolveThenApprove(t *testing.T, f storeFactory) {
 	if res := b.sync(); res.Outcome != model.OutcomeConflict {
 		t.Fatalf("conflicts are checked first, got %+v", res)
 	}
-	res, err := b.runner.Resolve(ctx, map[string]model.Side{"snippets/s07.json": model.SideLocal})
+	res, err := resolveCur(b.runner, map[string]model.Side{"snippets/s07.json": model.SideLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func scenarioResolveThenApprove(t *testing.T, f storeFactory) {
 	if res.Outcome != model.OutcomeConflict {
 		t.Fatalf("approval alone cannot settle the conflict, got %+v", res)
 	}
-	res, err = b.runner.Resolve(ctx, map[string]model.Side{"snippets/s07.json": model.SideLocal})
+	res, err = resolveCur(b.runner, map[string]model.Side{"snippets/s07.json": model.SideLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func scenarioConflictClearsApproval(t *testing.T, f storeFactory) {
 	if p, _ := b.db.LoadPendingDeletes(act.ID); p != nil {
 		t.Fatalf("pending left after a conflict: %+v", p)
 	}
-	res, err := b.runner.Resolve(ctx, map[string]model.Side{"snippets/s07.json": model.SideLocal})
+	res, err := resolveCur(b.runner, map[string]model.Side{"snippets/s07.json": model.SideLocal})
 	if err != nil {
 		t.Fatal(err)
 	}

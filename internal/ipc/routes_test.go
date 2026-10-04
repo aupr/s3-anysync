@@ -129,8 +129,8 @@ func (r *rec) Conflicts(_ context.Context, id string) ([]model.Conflict, error) 
 func (r *rec) ConflictDetail(_ context.Context, id, p string) (engine.ConflictDetail, error) {
 	return engine.ConflictDetail{}, r.log("ConflictDetail", id, p)
 }
-func (r *rec) Resolve(_ context.Context, id string, ch map[string]model.Side) (model.SyncResult, error) {
-	return model.SyncResult{}, r.log("Resolve", id, ch)
+func (r *rec) Resolve(_ context.Context, id string, q api.ResolveRequest) (model.SyncResult, error) {
+	return model.SyncResult{}, r.log("Resolve", id, q)
 }
 func (r *rec) History(_ context.Context, id string, limit int) ([]model.HistoryEntry, error) {
 	return nil, r.log("History", id, limit)
@@ -238,9 +238,9 @@ func TestEveryClientMethodReachesTheRightRoute(t *testing.T) {
 		{"ConflictDetail", func() error { _, e := c.ConflictDetail(ctx, "a/b", "dir/f&x=1 y.txt"); return e },
 			`ConflictDetail "a/b"|"dir/f\u0026x=1 y.txt"`},
 		{"Resolve", func() error {
-			_, e := c.Resolve(ctx, "a/b", map[string]model.Side{"f": model.SideLocal})
+			_, e := c.Resolve(ctx, "a/b", resolveReq)
 			return e
-		}, `Resolve "a/b"|{"f":"local"}`},
+		}, `Resolve "a/b"|` + mj(resolveReq)},
 		{"History", func() error { _, e := c.History(ctx, weird, 7); return e }, `History "a b?c"|7`},
 	}
 	for _, tt := range tests {
@@ -253,6 +253,11 @@ func TestEveryClientMethodReachesTheRightRoute(t *testing.T) {
 			}
 		})
 	}
+}
+
+var resolveReq = api.ResolveRequest{
+	Choices:  map[string]model.Side{"f": model.SideLocal},
+	Reviewed: map[string]api.ConflictVersion{"f": {LocalHash: "l1", RemoteHash: ""}},
 }
 
 func mj(v any) string { b, _ := json.Marshal(v); return string(b) }

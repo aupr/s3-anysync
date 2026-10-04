@@ -28,13 +28,36 @@ type resolveReq struct {
 	reviewed map[string]model.Conflict
 }
 
+// ConflictVersion identifies the two sides of a conflict as the user saw them:
+// the content hashes, "" for a side that was deleted.
+type ConflictVersion struct {
+	LocalHash  string `json:"localHash"`
+	RemoteHash string `json:"remoteHash"`
+}
+
+func versionOf(c model.Conflict) ConflictVersion {
+	var v ConflictVersion
+	if c.Local != nil {
+		v.LocalHash = c.Local.Hash
+	}
+	if c.Remote != nil {
+		v.RemoteHash = c.Remote.Hash
+	}
+	return v
+}
+
 // Resolve settles conflicts (path → winning side) and runs the rest of the
 // sync. The losing side is snapshotted or backed up first. A choice is applied
 // only if both sides still hold the content the user reviewed; otherwise all
 // conflicts are saved again with the fresh content and nothing is applied.
 // Callers must treat a non-empty result.Deferred as "not fully resolved":
 // deferred conflict paths stay saved as conflicts.
-func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (model.SyncResult, error) {
+//
+// reviewed has, for every saved conflict, the content hashes the user was
+// shown ("" for a deleted side). If any differs from the saved conflict (it
+// was saved again with new content since), ErrConflictChanged is returned and
+// nothing is applied or consumed; a missing entry is ErrInvalidInput.
+func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side, reviewedVersions map[string]ConflictVersion) (model.SyncResult, error) {
 	for p, side := range choices {
 		if side != model.SideLocal && side != model.SideCloud {
 			return model.SyncResult{}, fmt.Errorf("%w: %s: unknown side %q", ErrInvalidInput, p, side)
@@ -69,6 +92,34 @@ func (r *Runner) Resolve(ctx context.Context, choices map[string]model.Side) (mo
 	}
 	if len(missing) > 0 {
 		return model.SyncResult{}, fmt.Errorf("%w: choose a side for every conflict; missing: %s", ErrInvalidInput, strings.Join(missing, ", "))
+	}
+	var noReview, changed []string
+	for _, c := range saved {
+		v, ok := reviewedVersions[c.Path]
+		switch {
+		case !ok:
+			noReview = append(noReview, c.Path)
+		case v != versionOf(c):
+			changed = append(changed, c.Path)
+		}
+	}
+	var extra []string
+	for p := range reviewedVersions {
+		if !isSaved[p] {
+			extra = append(extra, p)
+		}
+	}
+	sort.Strings(noReview)
+	sort.Strings(changed)
+	sort.Strings(extra)
+	if len(noReview) > 0 {
+		return model.SyncResult{}, fmt.Errorf("%w: reviewed version missing for: %s", ErrInvalidInput, strings.Join(noReview, ", "))
+	}
+	if len(extra) > 0 {
+		return model.SyncResult{}, fmt.Errorf("%w: reviewed version for a path that is not a conflict of this action: %s", ErrInvalidInput, strings.Join(extra, ", "))
+	}
+	if len(changed) > 0 {
+		return model.SyncResult{}, fmt.Errorf("%w: %s", ErrConflictChanged, strings.Join(changed, ", "))
 	}
 	reviewed := make(map[string]model.Conflict, len(saved))
 	for _, c := range saved {

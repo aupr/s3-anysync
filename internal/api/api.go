@@ -58,11 +58,24 @@ type Service interface {
 	Restore(ctx context.Context, actionID string, req RestoreRequest) (engine.RestoreResult, error)
 	Conflicts(ctx context.Context, actionID string) ([]model.Conflict, error)
 	ConflictDetail(ctx context.Context, actionID, path string) (engine.ConflictDetail, error)
-	Resolve(ctx context.Context, actionID string, choices map[string]model.Side) (model.SyncResult, error)
+	// Resolve settles the saved conflicts; it fails with conflict-changed if they
+	// no longer hold the versions in req.Reviewed.
+	Resolve(ctx context.Context, actionID string, req ResolveRequest) (model.SyncResult, error)
 	History(ctx context.Context, actionID string, limit int) ([]model.HistoryEntry, error)
 
 	// Subscribe streams events until ctx ends; the channel is then closed.
 	Subscribe(ctx context.Context) (<-chan Event, error)
+}
+
+// ConflictVersion identifies the two sides of a conflict as the user saw them:
+// the content hashes, "" for a side that was deleted.
+type ConflictVersion = engine.ConflictVersion
+
+// ResolveRequest resolves the saved conflicts. Choices has a side for every
+// conflict; Reviewed has, for the same paths, the versions the choices were made on.
+type ResolveRequest struct {
+	Choices  map[string]model.Side      `json:"choices"`
+	Reviewed map[string]ConflictVersion `json:"reviewed"`
 }
 
 // Action states.

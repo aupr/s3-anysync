@@ -19,6 +19,13 @@ import (
 // conflicted returns env b with an action paused on one conflict.
 func conflicted(t *testing.T) (*testEnv, model.Action) {
 	t.Helper()
+	e, act, _ := conflictedIn(t)
+	return e, act
+}
+
+// conflictedIn is conflicted that also returns the local item folder of env b.
+func conflictedIn(t *testing.T) (*testEnv, model.Action, string) {
+	t.Helper()
 	store := storage.NewMemory()
 	a, b := newEnv(t, store), newEnv(t, store)
 	act, it, dirA := a.newAction(t, 1)
@@ -31,7 +38,7 @@ func conflicted(t *testing.T) (*testEnv, model.Action) {
 	if res, err := b.m.Sync(ctx, act.ID); err != nil || res.Outcome != model.OutcomeConflict {
 		t.Fatalf("sync = %+v, %v", res, err)
 	}
-	return b, act
+	return b, act, dirB
 }
 
 func historyLen(t *testing.T, e *testEnv, id string) int {
@@ -46,11 +53,11 @@ func historyLen(t *testing.T, e *testEnv, id string) int {
 func TestBadResolveChoiceIsNotASyncFailure(t *testing.T) {
 	e, act := conflicted(t)
 	before := historyLen(t, e, act.ID)
-	_, err := e.m.Resolve(ctx, act.ID, map[string]model.Side{"snippets/s00.json": "both"})
+	_, err := e.m.Resolve(ctx, act.ID, api.ResolveRequest{Choices: map[string]model.Side{"snippets/s00.json": "both"}, Reviewed: reviewedOf(t, e, act.ID)})
 	if !errors.Is(err, engine.ErrInvalidInput) {
 		t.Fatalf("want ErrInvalidInput, got %v", err)
 	}
-	_, err = e.m.Resolve(ctx, act.ID, map[string]model.Side{})
+	_, err = e.m.Resolve(ctx, act.ID, api.ResolveRequest{Choices: map[string]model.Side{}, Reviewed: reviewedOf(t, e, act.ID)})
 	if !errors.Is(err, engine.ErrInvalidInput) {
 		t.Fatalf("want ErrInvalidInput, got %v", err)
 	}
@@ -645,5 +652,60 @@ func TestCancelSyncWhenIdleDoesNotCancelNextJob(t *testing.T) {
 	}
 	if st := e.state(t, act.ID); st.LastOutcome != model.OutcomeOK {
 		t.Fatalf("after late cancel = %+v", st)
+	}
+}
+
+func reviewedOf(t *testing.T, e *testEnv, id string) map[string]api.ConflictVersion {
+	t.Helper()
+	list, err := e.m.Conflicts(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]api.ConflictVersion{}
+	for _, c := range list {
+		var v api.ConflictVersion
+		if c.Local != nil {
+			v.LocalHash = c.Local.Hash
+		}
+		if c.Remote != nil {
+			v.RemoteHash = c.Remote.Hash
+		}
+		out[c.Path] = v
+	}
+	return out
+}
+
+func TestStaleResolveIsNotASyncFailure(t *testing.T) {
+	e, act, dir := conflictedIn(t)
+	old := reviewedOf(t, e, act.ID)
+	// the conflict is saved again with new local content
+	if err := os.WriteFile(filepath.Join(dir, "s00.json"), []byte("edited again"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := e.m.Sync(ctx, act.ID); err != nil || res.Outcome != model.OutcomeConflict {
+		t.Fatalf("sync = %+v, %v", res, err)
+	}
+	before := historyLen(t, e, act.ID)
+	_, err := e.m.Resolve(ctx, act.ID, api.ResolveRequest{
+		Choices:  map[string]model.Side{"snippets/s00.json": model.SideLocal},
+		Reviewed: old,
+	})
+	if !errors.Is(err, engine.ErrConflictChanged) {
+		t.Fatalf("want ErrConflictChanged, got %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	st := e.state(t, act.ID)
+	if st.State != api.StatePausedConflict || st.Conflicts != 1 || st.Failures != 0 || !st.NextRun.IsZero() || st.LastError != "" {
+		t.Fatalf("status = %+v", st)
+	}
+	if n := historyLen(t, e, act.ID); n != before {
+		t.Fatalf("history grew %d -> %d: a retry ran", before, n)
+	}
+	res, err := e.m.Resolve(ctx, act.ID, api.ResolveRequest{
+		Choices:  map[string]model.Side{"snippets/s00.json": model.SideLocal},
+		Reviewed: reviewedOf(t, e, act.ID),
+	})
+	if err != nil || res.Outcome != model.OutcomeOK {
+		t.Fatalf("fresh resolve = %+v, %v", res, err)
 	}
 }
