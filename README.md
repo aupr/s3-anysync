@@ -16,7 +16,7 @@ Plans 1 and 2 are done: the sync engine, the command line, and the background ag
 - **Deletes**: by default deletes propagate. `--no-propagate-deletes` stops that; one-way modes never delete a file on the destination that was never synced. With `--receiver-restores-cloud`, a cloud-to-local machine uploads a file back that the cloud deleted (default: it never uploads).
 - **Encrypted actions**: `action create --encrypt` encrypts file contents with AES-256-GCM. The passphrase is read from `S3_ANYSYNC_PASSPHRASE` (also for `action join`) and is kept in the keychain.
 - **Conflicts**: when both sides changed a file, `sync` reports `conflict: <path>` and leaves both copies alone and pauses the whole action: non-conflicting changes wait too until the conflicts are resolved. `resolve` needs a choice for every conflict: either `--all local|cloud` or one `--path P=local|cloud` per conflicting path.
-- **Snapshots and restore**: `snapshot` stores a point-in-time copy of the action in the bucket (a `pre-resolve` snapshot is taken before resolving only when the resolution overwrites or deletes cloud files; local files that lose are copied to `<data dir>/local-backups/<actionId>/<ts>/`, newest 20 kept). Every sync that overwrites or deletes cloud files also takes an `auto-pre-sync` snapshot; these count toward the snapshot retention (default 20) and can age out older snapshots. `snapshots` lists them; `restore --to local|cloud|both [--path P]... ACTION_ID TS` restores from one.
+- **Snapshots and restore**: `snapshot` stores a point-in-time copy of the action in the bucket (a `pre-resolve` snapshot is taken before resolving only when the resolution overwrites or deletes cloud files; local files that lose are copied to `<data dir>/local-backups/<actionId>/<ts>/`, newest 20 kept). Every sync that overwrites or deletes cloud files also takes an `auto-pre-sync` snapshot. Retention is split: manual snapshots keep the newest 20; automatic ones keep the newest 50 or those younger than 7 days; automatic snapshots that record deletions are kept at least 30 days. `snapshots` lists them; `restore --to local|cloud|both [--path P]... ACTION_ID TS` restores from one.
 - **Data dir**: machine id, state and baseline live in `os.UserConfigDir()/s3-anysync`. Set `S3_ANYSYNC_DATA_DIR` to use another folder, which is how you simulate two machines on one computer.
 
 ## Build
@@ -65,7 +65,7 @@ Run `./bin/s3-anysync-agent` with no arguments for every command. Flags always c
 s3-anysync-agent run [--no-tray] [--verbose]
 ```
 
-The agent syncs in the background, shows a status icon and menu in the tray (unless `--no-tray`, or the build has no tray), and sends desktop notifications for conflicts, pending deletions and repeated failures. Logs are JSON files in `<data dir>/logs/agent-YYYY-MM-DD.log`, kept 7 days; `--verbose` also writes them to stderr. The level follows the log level setting. Stop it with Quit in the tray, Ctrl-C or SIGTERM; it finishes running syncs, then exits.
+The agent syncs in the background, shows a status icon and menu in the tray (unless `--no-tray`, or the build has no tray), and sends desktop notifications for conflicts, pending deletions and repeated failures. Logs are JSON files in `<data dir>/logs/agent-YYYY-MM-DD.log`, kept 7 days; `--verbose` also writes them to stderr. The level follows the log level setting. Stop it with Quit in the tray, Ctrl-C or SIGTERM; after IPC shutdown it cancels running syncs (waiting at most 5 s), then exits.
 
 Only one process owns a data folder (`<data dir>/agent.lock`). If you start a second agent, or start one while a CLI command is running in-process, it exits with an error: retry in a moment.
 
@@ -75,7 +75,7 @@ Autostart at login (macOS LaunchAgent, Windows HKCU Run entry; both run `<agent 
 s3-anysync-agent autostart enable|disable|status
 ```
 
-Enabling never starts or stops the running agent. When the agent starts and autostart is enabled, it rewrites the entry so it always points at the current executable.
+Enabling never starts or stops the running agent. When the agent starts with autostart enabled, it rewrites the entry only if the stored executable no longer exists, and never when `S3_ANYSYNC_DATA_DIR` is set (dev runs).
 
 Every other command talks to the running agent automatically (the same API the GUI will use), or works in-process when no agent runs. Useful commands: `status` (agent state, each action's state and last result), `pause ACTION_ID` and `resume ACTION_ID` (a pause survives restarts), `history [--limit N] ACTION_ID`.
 
@@ -86,7 +86,7 @@ Set them per action with `action rules` (without flags it shows the rules):
 - `--on-change` syncs after local files change, once they have been quiet for `--debounce SECONDS`.
 - `--schedule SPEC`: `none`, `every:MINUTES`, `daily:HH:MM`, `weekly:DAY@HH:MM` (0 = Sunday) or `cron:SPEC`.
 - When `--on-change` is on and there is no schedule, the agent also checks the bucket for remote changes every `--poll MINUTES`.
-- Triggers do nothing while the action is paused in any way: paused by you, on a conflict, or on pending deletions. Failed syncs are retried after 30 s, 2 min, 10 min, 30 min, then hourly (never for errors a retry cannot fix, such as a wrong passphrase, a missing folder or denied access).
+- Triggers do nothing while the action is paused in any way: paused by you, on a conflict, or on pending deletions. While an action is in `error`, change, schedule and poll triggers wait for the backoff retry. Failed syncs are retried after 30 s, 2 min, 10 min, 30 min, then hourly (never for errors a retry cannot fix, such as a wrong passphrase, a missing folder or denied access).
 
 ## Delete guard
 
@@ -133,5 +133,10 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 - Restore to local writes the snapshot's files into the mapped local paths (backing up what it overwrites); it is not an exact rollback and does not remove local files that are absent from the snapshot.
 - A missing, renamed or unmounted item folder is refused with an error (`ErrRootMissing`) instead of deleting; fix the folder or unmap and map the item again.
 - The macOS tray needs a CGO build; a CGO-off build runs headless. There is no GUI yet, so "Open" is hidden in the tray.
+- The Windows build is a console app, so the HKCU Run autostart opens a console window until Plan 4 ships a `windowsgui` build.
+- Autostart is per user, not per data folder: it starts the default data folder. The agent rewrites the entry at start only when the stored executable no longer exists and `S3_ANYSYNC_DATA_DIR` is not set.
+- Items cannot contain the agent's own data folder (it would sync the agent's state): `item add`/`item map` refuse such a path, and a sync of an existing item that does is refused with an error.
+- On macOS a very large watched tree is only partially watched (cap: 5000 files; the rest is noticed by schedules, cloud polls and manual syncs).
+- A slow mass deletion spread over more than the watcher's MaxWait can stay under the delete guard threshold in each run (snapshots keep deletions for 30 days).
 - The Windows pieces (named pipe with its owner check, tray, HKCU Run autostart) are cross-compiled but UNTESTED on Windows; the pipe-owner check in particular has never run there.
 - The tray, desktop notifications and autostart have not been checked by hand on a real desktop yet (pending).

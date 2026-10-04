@@ -225,7 +225,7 @@ Plan 2 implemented this section with the decisions in section 13 (own autostart 
 
 ## 8. IPC
 
-- **Transport:** HTTP/1.1. On macOS it runs over a Unix socket `<appdata>/agent.sock` with mode 0600. On Windows it runs over the named pipe `\\.\pipe\s3-anysync-<username>`, with a security descriptor that allows only the current user.
+- **Transport:** HTTP/1.1. On macOS it runs over a Unix socket `<appdata>/agent.sock` with mode 0600. On Windows it runs over the named pipe `\\.\pipe\s3-anysync-<SID>-<16 hex of sha256(data dir)>`, with a security descriptor that allows only the current user.
 - **Authentication:** a random 32-byte token in `<appdata>/ipc.token`, readable only by the user. It is sent as `Authorization: Bearer`.
 - **Endpoints (JSON):**
   - `GET/POST/PUT/DELETE /profiles`, and `POST /profiles/{id}/test`
@@ -310,4 +310,12 @@ Decided with the user on 2026-10-01, after Plan 1 shipped.
 - **Files whose names are invalid on this OS** (Windows: `<>:"|?*`, trailing dot or space, reserved names such as `CON`, `NUL`, `COM1`) are not synced to this machine and are reported in the result as `unsupported`; they are never deleted anywhere because of it.
 - **Autostart** is implemented without `kardianos/service` (which installs Windows system services needing admin rights): macOS writes the LaunchAgent `~/Library/LaunchAgents/com.niceit.s3-anysync.agent.plist` (label `com.niceit.s3-anysync.agent`, `RunAtLoad`), Windows writes the HKCU `Software\Microsoft\Windows\CurrentVersion\Run` value `s3-anysync`; both run `<agent executable> run`. Enabling or disabling never starts or stops the running agent.
 - **State machine persistence:** a user pause is stored per action and survives restarts; `paused-conflict` and `paused-deletes` are re-derived from the saved conflicts and pending deletions; errors are retried after a restart.
-- **IPC additions to section 8:** `GET /status`, `PUT /actions/{id}/rules`, `DELETE /actions/{id}` (leave), item unmap/remove, `POST /actions/{id}/approve-deletes`, `GET /actions/{id}/conflicts/diff?path=`, `GET /actions/{id}/history`. Errors carry a stable `code` so clients can tell conflicts, locks, decryption and missing-root errors apart. On Windows the pipe is `\\.\pipe\s3-anysync-<16 hex of sha256(data dir)>` with a DACL granting only the current user.
+- **IPC additions to section 8:** `GET /status`, `PUT /actions/{id}/rules`, `DELETE /actions/{id}` (leave), item unmap/remove, `POST /actions/{id}/approve-deletes`, `GET /actions/{id}/conflicts/diff?path=`, `GET /actions/{id}/history`. Errors carry a stable `code` so clients can tell conflicts, locks, decryption and missing-root errors apart. On Windows the pipe is `\\.\pipe\s3-anysync-<SID>-<16 hex of sha256(data dir)>` with a DACL granting only the current user, and the client verifies that the pipe server runs as that user.
+
+Implementation notes for Plan 2:
+
+- **Events actually emitted:** `action.state`, `action.result` and `actions.changed`. The `log` event (EventLog) and `action.progress` are not emitted yet.
+- **Running flag:** the action status carries a `Running` flag instead of a separate `running` state; the state stays `idle` (or the paused/error state) while a sync runs.
+- **No profile edit or delete endpoints yet:** Plan 3 adds them.
+- **Approve-deletes digest:** approving needs the digest of the list the user reviewed (`--yes --digest D` in the CLI); if the saved list changed since, nothing is approved and the fresh list and digest are shown.
+- **Data-folder protection:** an item's local path may not equal, contain or lie inside the agent's data folder (`engine.ErrProtectedPath`, API code `invalid`). `item add` and `item map` refuse it; a sync of an existing item that does is refused as a permanent error and no watcher is started for it.
