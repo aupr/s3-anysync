@@ -44,6 +44,32 @@ func TestDailyFileRotatesAndPrunes(t *testing.T) {
 	}
 }
 
+func TestDailyFilePrunesBoundary(t *testing.T) {
+	// With keep=7 and today 2026-10-01, cutoff is 2026-09-24.
+	// Files on cutoff date must be KEPT (not before cutoff).
+	dir := t.TempDir()
+	day := time.Date(2026, 10, 1, 12, 0, 0, 0, time.Local)
+	now := func() time.Time { return day }
+	boundaryFile := filepath.Join(dir, "agent-2026-09-24.log")
+	beforeCutoff := filepath.Join(dir, "agent-2026-09-23.log")
+	os.WriteFile(boundaryFile, []byte("x"), 0o600)
+	os.WriteFile(beforeCutoff, []byte("x"), 0o600)
+
+	f, err := OpenDaily(dir, 7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	f.Write([]byte("log\n"))
+
+	if _, err := os.Stat(boundaryFile); err != nil {
+		t.Fatal("boundary file (2026-09-24) should be kept with keep=7 on 2026-10-01")
+	}
+	if _, err := os.Stat(beforeCutoff); !os.IsNotExist(err) {
+		t.Fatal("file before boundary (2026-09-23) should be deleted")
+	}
+}
+
 func TestLevels(t *testing.T) {
 	for in, want := range map[string]slog.Level{"debug": slog.LevelDebug, "info": slog.LevelInfo, "warn": slog.LevelWarn, "error": slog.LevelError} {
 		if got, err := ParseLevel(in); err != nil || got != want {
