@@ -8,6 +8,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/niceit/s3-anysync/internal/paths"
 )
 
 // Direction says which way an action syncs on one machine.
@@ -193,6 +195,9 @@ func (a Action) Validate() error {
 	if a.DeleteGuardMinFiles < 1 || a.DeleteGuardPercent < 1 || a.DeleteGuardPercent > 100 {
 		return errors.New("delete guard needs at least 1 file and a percent between 1 and 100")
 	}
+	if _, err := paths.NewMatcher(a.Excludes); err != nil {
+		return fmt.Errorf("action excludes: %w", err)
+	}
 	ids := map[string]bool{}
 	var names []string
 	for _, it := range a.Items {
@@ -205,6 +210,9 @@ func (a Action) Validate() error {
 		ids[it.ID] = true
 		if it.Type != ItemFile && it.Type != ItemDir {
 			return fmt.Errorf("item %s: unknown type %q", it.ID, it.Type)
+		}
+		if _, err := paths.NewMatcher(it.Excludes); err != nil {
+			return fmt.Errorf("item %s: %w", it.ID, err)
 		}
 		n, err := NormalizeRemoteName(it.RemoteName)
 		if err != nil {

@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/niceit/s3-anysync/internal/model"
 	"github.com/niceit/s3-anysync/internal/schedule"
 	"github.com/niceit/s3-anysync/internal/secrets"
+	"github.com/niceit/s3-anysync/internal/state"
 )
 
 const settingLogLevel = "log_level"
@@ -34,8 +36,11 @@ func (a *App) UpdateRules(ctx context.Context, actionID string, r model.Rules) (
 // of the action (an unknown item has no baseline to drop).
 func (a *App) dropBaselineOfItem(actionID, itemID string) error {
 	cur, err := a.DB.GetAction(actionID)
-	if err != nil {
+	if errors.Is(err, state.ErrNotFound) {
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	for _, it := range cur.Items {
 		if it.ID == itemID {
@@ -90,6 +95,11 @@ func (a *App) RemoveItem(ctx context.Context, actionID, itemID string) error {
 // when offline) is ignored.
 func (a *App) LeaveAction(ctx context.Context, actionID string, force bool) error {
 	act, err := a.DB.GetAction(actionID)
+	if errors.Is(err, state.ErrNotFound) {
+		// A retry after a partial failure: still clean up an orphan passphrase.
+		_ = a.Secrets.Delete(secrets.ActionPassphraseKey(actionID))
+		return err
+	}
 	if err != nil {
 		return err
 	}
@@ -109,7 +119,7 @@ func (a *App) LeaveAction(ctx context.Context, actionID string, force bool) erro
 	}
 	if act.Encrypt {
 		if err := a.Secrets.Delete(secrets.ActionPassphraseKey(actionID)); err != nil {
-			return fmt.Errorf("remove passphrase: %w", err)
+			return fmt.Errorf("the action was removed locally, but removing its passphrase failed: %w", err)
 		}
 	}
 	return nil

@@ -186,3 +186,25 @@ func TestRulesRoundTrip(t *testing.T) {
 		t.Fatal("ApplyRules changed identity, items or encryption")
 	}
 }
+
+func TestValidateExcludePatterns(t *testing.T) {
+	for _, bad := range []string{"[", "a[b"} {
+		a := validAction()
+		a.Excludes = []string{bad}
+		err := a.Validate()
+		if err == nil || !strings.Contains(err.Error(), bad) {
+			t.Errorf("action exclude %q: err = %v", bad, err)
+		}
+		a = validAction()
+		a.Items[1].Excludes = []string{"ok", bad}
+		if err := a.Validate(); err == nil || !strings.Contains(err.Error(), bad) {
+			t.Errorf("item exclude %q: err = %v", bad, err)
+		}
+	}
+	a := validAction()
+	a.Excludes = []string{"*.log", "/root.txt"}
+	a.Items[1].Excludes = []string{"**/gen/**"}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("valid excludes rejected: %v", err)
+	}
+}

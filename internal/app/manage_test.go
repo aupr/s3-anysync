@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/niceit/s3-anysync/internal/engine"
@@ -90,10 +92,17 @@ func TestUnmapAndRemoveItem(t *testing.T) {
 		t.Fatal("baseline of the unmapped item kept")
 	}
 	local, _ := a.Action(act.ID)
+	found := false
 	for _, it := range local.Items {
-		if it.ID == folder.ID && it.LocalPaths[a.MachineID] != "" {
-			t.Fatal("path still mapped")
+		if it.ID == folder.ID {
+			found = true
+			if it.LocalPaths[a.MachineID] != "" {
+				t.Fatal("path still mapped")
+			}
 		}
+	}
+	if !found {
+		t.Fatal("unmapped item missing from the local copy")
 	}
 	r, _ := a.Runner(act.ID)
 	if res, err := r.Sync(ctx); err != nil || res.DeletedRemote != 0 {
@@ -192,5 +201,192 @@ func TestHistoryLogLevelAndPause(t *testing.T) {
 	}
 	if p, err := a.PendingDeletes(act.ID); err != nil || p != nil {
 		t.Fatalf("pending = %v, %v", p, err)
+	}
+}
+
+// bucketAndLocal returns the bucket copy and the local copy of an action.
+func bucketAndLocal(t *testing.T, a *App, store *storage.Memory, id string) (model.Action, model.Action) {
+	t.Helper()
+	shared, err := engine.FetchAction(ctx, store, "", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := a.Action(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return shared, local
+}
+
+func TestUpdateRulesRejectsInvalid(t *testing.T) {
+	a, store, act, _, _, _ := manageFixture(t, false)
+	good := act.Rules()
+	sharedBefore, localBefore := bucketAndLocal(t, a, store, act.ID)
+	bad := map[string]func(*model.Rules){
+		"exclude":   func(r *model.Rules) { r.Excludes = []string{"["} },
+		"name":      func(r *model.Rules) { r.Name = "" },
+		"direction": func(r *model.Rules) { r.Direction = model.Direction("sideways") },
+	}
+	for name, mut := range bad {
+		r := good
+		mut(&r)
+		if _, err := a.UpdateRules(ctx, act.ID, r); err == nil {
+			t.Errorf("%s: invalid rules accepted", name)
+		}
+		shared, local := bucketAndLocal(t, a, store, act.ID)
+		if !reflect.DeepEqual(shared, sharedBefore) || !reflect.DeepEqual(local, localBefore) {
+			t.Errorf("%s: a failed update changed a copy", name)
+		}
+	}
+}
+
+func TestAddItemAndCreateActionRejectBadExcludes(t *testing.T) {
+	a, store, act, _, _, dir := manageFixture(t, false)
+	sharedBefore, localBefore := bucketAndLocal(t, a, store, act.ID)
+	_, err := a.AddItem(ctx, act.ID, model.Item{RemoteName: "x", Type: model.ItemDir, Excludes: []string{"a[b"}}, dir)
+	if err == nil {
+		t.Fatal("bad item exclude accepted")
+	}
+	shared, local := bucketAndLocal(t, a, store, act.ID)
+	if !reflect.DeepEqual(shared, sharedBefore) || !reflect.DeepEqual(local, localBefore) {
+		t.Fatal("failed AddItem changed a copy")
+	}
+	keys := func() int {
+		l, _ := store.List(ctx, "")
+		return len(l)
+	}
+	n := keys()
+	profiles, _ := a.Profiles()
+	if _, err := a.CreateAction(ctx, profiles[0].ID, model.Action{Name: "Bad", Excludes: []string{"["}}, ""); err == nil {
+		t.Fatal("bad exclude accepted by CreateAction")
+	}
+	if keys() != n {
+		t.Fatal("CreateAction published something")
+	}
+}
+
+func TestAddItemReusingRemovedNameDeletesNothing(t *testing.T) {
+	a, store, act, _, folder, _ := manageFixture(t, false)
+	if err := a.RemoveItem(ctx, act.ID, folder.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a stale baseline left behind by an earlier removal.
+	base, _ := a.DB.LoadBaseline(act.ID)
+	base["snippets/a.json"] = model.FileEntry{Size: 1}
+	if err := a.DB.SaveBaseline(act.ID, base); err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	if _, err := a.AddItem(ctx, act.ID, model.Item{RemoteName: "snippets", Type: model.ItemDir}, empty); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := a.Runner(act.ID)
+	res, err := r.Sync(ctx)
+	if err != nil || res.DeletedRemote != 0 {
+		t.Fatalf("sync = %+v, %v", res, err)
+	}
+	if _, err := store.Head(ctx, engine.NewLayout("", act.ID).Current("snippets/a.json")); err != nil {
+		t.Fatal("remote file deleted")
+	}
+	if _, err := os.Stat(filepath.Join(empty, "a.json")); err != nil {
+		t.Fatalf("file did not come down: %v", err)
+	}
+}
+
+// flakySecrets fails Delete while fail is set.
+type flakySecrets struct {
+	secrets.Store
+	fail bool
+}
+
+func (f *flakySecrets) Delete(key string) error {
+	if f.fail {
+		return errors.New("keychain locked")
+	}
+	return f.Store.Delete(key)
+}
+
+func TestLeaveActionPassphraseFailure(t *testing.T) {
+	a, _, act, _, _, _ := manageFixture(t, true)
+	fs := &flakySecrets{Store: a.Secrets}
+	a.Secrets = fs
+	fs.fail = true
+	err := a.LeaveAction(ctx, act.ID, false)
+	if err == nil || !strings.Contains(err.Error(), "removed locally") || !strings.Contains(err.Error(), "passphrase") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := a.Action(act.ID); !errors.Is(err, state.ErrNotFound) {
+		t.Fatal("action kept")
+	}
+	// Retry: action is gone but the orphan secret is still cleaned up.
+	fs.fail = false
+	if err := a.LeaveAction(ctx, act.ID, false); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("retry err = %v", err)
+	}
+	if _, err := fs.Get(secrets.ActionPassphraseKey(act.ID)); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatal("orphan passphrase kept")
+	}
+}
+
+func TestForcedLeaveEncryptedRemovesPassphrase(t *testing.T) {
+	a, _, act, _, _, _ := manageFixture(t, true)
+	a.NewStorage = func(model.Profile, string) (storage.Storage, error) { return nil, errors.New("offline") }
+	if err := a.LeaveAction(ctx, act.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Secrets.Get(secrets.ActionPassphraseKey(act.ID)); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatal("passphrase kept")
+	}
+}
+
+func TestHistoryLimit(t *testing.T) {
+	a, _, act, _, _, _ := manageFixture(t, false)
+	r, _ := a.Runner(act.ID)
+	for i := 0; i < 3; i++ {
+		if _, err := r.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, _ := a.History(act.ID, 0)
+	if len(all) < 2 {
+		t.Fatalf("only %d entries", len(all))
+	}
+	if h, err := a.History(act.ID, 1); err != nil || len(h) != 1 {
+		t.Fatalf("limit 1 = %d, %v", len(h), err)
+	}
+}
+
+func TestRemoveItemKeepsData(t *testing.T) {
+	a, store, act, _, folder, dir := manageFixture(t, false)
+	file := ""
+	local0, _ := a.Action(act.ID)
+	for _, it := range local0.Items {
+		if it.RemoteName == "settings.json" {
+			file = it.ID
+		}
+	}
+	if file == "" {
+		t.Fatal("file item not found")
+	}
+	if err := a.RemoveItem(ctx, act.ID, file); err != nil {
+		t.Fatal(err)
+	}
+	base, _ := a.DB.LoadBaseline(act.ID)
+	if _, ok := base["settings.json"]; ok {
+		t.Fatal("baseline of the removed item kept")
+	}
+	local, _ := a.Action(act.ID)
+	if len(local.Items) != 1 || local.Items[0].ID != folder.ID {
+		t.Fatalf("local items = %+v", local.Items)
+	}
+	if _, err := store.Head(ctx, engine.NewLayout("", act.ID).Current("settings.json")); err != nil {
+		t.Fatal("cloud copy removed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "settings.json")); err != nil {
+		t.Fatal("local file removed")
+	}
+	r, _ := a.Runner(act.ID)
+	if res, err := r.Sync(ctx); err != nil || res.DeletedRemote != 0 || res.DeletedLocal != 0 {
+		t.Fatalf("sync after remove = %+v, %v", res, err)
 	}
 }

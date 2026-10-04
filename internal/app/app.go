@@ -254,6 +254,11 @@ func (a *App) AddItem(ctx context.Context, actionID string, it model.Item, local
 	it.ID = uuid.NewString()
 	it.RemoteName = name
 	it.LocalPaths = map[string]string{a.MachineID: localPath}
+	// A removed item of the same name may have left baseline rows behind;
+	// they would plan deletions against the new folder. Drop them first.
+	if err := a.dropItemBaseline(actionID, name); err != nil {
+		return it, err
+	}
 	_, err = a.updateShared(ctx, actionID, func(act *model.Action) error {
 		act.Items = append(act.Items, it)
 		return nil
