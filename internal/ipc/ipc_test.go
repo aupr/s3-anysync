@@ -192,6 +192,11 @@ func TestWrongTokenIsRejected(t *testing.T) {
 	if got := rawGet(t, dir, "", "/status"); !strings.HasPrefix(got, "401") {
 		t.Fatalf("no token: %s", got)
 	}
+	// The client re-reads the token file after a 401 (and would then succeed),
+	// so remove it to test a token that stays wrong.
+	if err := os.Remove(filepath.Join(dir, "ipc.token")); err != nil {
+		t.Fatal(err)
+	}
 	c := ipc.NewClient(dir, "wrong")
 	defer c.Close()
 	if _, err := c.Status(ctx); err == nil {
@@ -275,4 +280,28 @@ func TestShutdownEndsOpenEventStreams(t *testing.T) {
 		t.Fatal("client stream not closed after shutdown")
 	}
 	ipc.Cleanup(dir)
+}
+
+func TestClientRetriesOnceWithRotatedToken(t *testing.T) {
+	r := &rec{}
+	dir := startStub(t, r, "new-token", nil)
+	c := ipc.NewClient(dir, "old-token")
+	defer c.Close()
+	// The agent restarted and wrote a new token; the client still has the old one.
+	if err := os.WriteFile(filepath.Join(dir, "ipc.token"), []byte("new-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Status(ctx); err != nil {
+		t.Fatalf("status after rotation: %v", err)
+	}
+	// A token that is still wrong after re-reading is reported, not retried forever.
+	if err := os.WriteFile(filepath.Join(dir, "ipc.token"), []byte("stale\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c2 := ipc.NewClient(dir, "stale")
+	defer c2.Close()
+	var re *api.RemoteError
+	if _, err := c2.Status(ctx); !errors.As(err, &re) || re.Code != "unauthorized" {
+		t.Fatalf("wrong token: %v", err)
+	}
 }

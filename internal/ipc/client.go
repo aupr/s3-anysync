@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/niceit/s3-anysync/internal/api"
 	"github.com/niceit/s3-anysync/internal/engine"
@@ -25,10 +26,30 @@ import (
 // agent; a job that already runs is not cancelled (the agent finishes it, or
 // cancels it at shutdown), so only the wait for the answer ends. A wrong or missing token yields a *api.RemoteError with
 // Code "unauthorized"; callers (the CLI) should check that code rather than
-// use errors.Is, as it stands for no sentinel error.
+// use errors.Is, as it stands for no sentinel error. A 401 makes the client
+// re-read the token file once (the agent rotates it at every start) and retry.
 type Client struct {
-	hc    *http.Client
-	token string
+	hc      *http.Client
+	dataDir string
+	mu      sync.Mutex
+	token   string
+}
+
+func (c *Client) currentToken() string { c.mu.Lock(); defer c.mu.Unlock(); return c.token }
+
+// refreshToken re-reads the agent's token; it reports whether it changed.
+func (c *Client) refreshToken() bool {
+	tok, err := ReadToken(c.dataDir)
+	if err != nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if tok == c.token {
+		return false
+	}
+	c.token = tok
+	return true
 }
 
 var _ api.Service = (*Client)(nil)
@@ -39,7 +60,7 @@ func NewClient(dataDir, token string) *Client {
 		DialContext:        func(ctx context.Context, _, _ string) (net.Conn, error) { return Dial(ctx, dataDir) },
 		DisableCompression: true,
 	}
-	return &Client{hc: &http.Client{Transport: tr}, token: token}
+	return &Client{hc: &http.Client{Transport: tr}, dataDir: dataDir, token: token}
 }
 
 // Connect reads the agent's token and checks that the agent answers.
@@ -62,25 +83,45 @@ func (c *Client) Close() { c.hc.CloseIdleConnections() }
 func esc(s string) string { return url.PathEscape(s) }
 
 func (c *Client) request(ctx context.Context, method, path string, in any) (*http.Response, error) {
-	var body io.Reader
+	var b []byte
 	if in != nil {
-		b, err := json.Marshal(in)
+		var err error
+		if b, err = json.Marshal(in); err != nil {
+			return nil, err
+		}
+	}
+	send := func() (*http.Response, error) {
+		var body io.Reader
+		if b != nil {
+			body = bytes.NewReader(b)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, "http://agent"+path, body)
 		if err != nil {
 			return nil, err
 		}
-		body = bytes.NewReader(b)
+		req.Header.Set("Authorization", "Bearer "+c.currentToken())
+		if in != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("ipc: %w", err)
+		}
+		return resp, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://agent"+path, body)
+	resp, err := send()
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ipc: %w", err)
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Re-read the token only to learn whether the agent rotated it; if it
+		// did not change, the 401 answer is reported as it is.
+		if c.refreshToken() {
+			resp.Body.Close()
+			if resp, err = send(); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()

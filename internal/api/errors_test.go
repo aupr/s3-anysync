@@ -32,7 +32,7 @@ func TestCodesRoundTrip(t *testing.T) {
 		ErrNotFound:                 "not-found",
 		ErrInvalid:                  "invalid",
 		engine.ErrInvalidInput:      "invalid",
-		engine.ErrProtectedPath:     "invalid",
+		engine.ErrProtectedPath:     "protected-path",
 		ErrUnsupported:              "unsupported",
 		ErrUnavailable:              "unavailable",
 		ErrCancelled:                "cancelled",
@@ -62,7 +62,7 @@ func TestHTTPStatus(t *testing.T) {
 	cases := map[string]int{
 		"not-found": http.StatusNotFound, "invalid": http.StatusBadRequest, "conflict-pending": http.StatusConflict,
 		"in-use": http.StatusConflict, "locked": http.StatusConflict, "busy": http.StatusConflict, "conflict-edit": http.StatusConflict, "access-denied": http.StatusForbidden,
-		"unsupported": http.StatusNotImplemented, "unavailable": http.StatusServiceUnavailable, "internal": http.StatusInternalServerError, "decrypt": http.StatusUnprocessableEntity,
+		"unsupported": http.StatusNotImplemented, "protected-path": http.StatusBadRequest, "unavailable": http.StatusServiceUnavailable, "internal": http.StatusInternalServerError, "decrypt": http.StatusUnprocessableEntity,
 	}
 	for code, want := range cases {
 		if got := HTTPStatus(code); got != want {

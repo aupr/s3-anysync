@@ -44,7 +44,8 @@ var codes = []struct {
 	{"cancelled", http.StatusConflict, []error{ErrCancelled}},
 	{"busy", http.StatusConflict, []error{datalock.ErrBusy}},
 	{"not-found", http.StatusNotFound, []error{ErrNotFound, state.ErrNotFound, storage.ErrNotFound}},
-	{"invalid", http.StatusBadRequest, []error{ErrInvalid, engine.ErrInvalidInput, engine.ErrProtectedPath}},
+	{"protected-path", http.StatusBadRequest, []error{engine.ErrProtectedPath}},
+	{"invalid", http.StatusBadRequest, []error{ErrInvalid, engine.ErrInvalidInput}},
 	{"unsupported", http.StatusNotImplemented, []error{ErrUnsupported}},
 	{"unavailable", http.StatusServiceUnavailable, []error{ErrUnavailable}},
 }

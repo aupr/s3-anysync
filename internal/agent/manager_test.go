@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -435,5 +436,27 @@ func TestUpdateProfileRebuildsRunners(t *testing.T) {
 	}
 	if err := e.m.RemoveProfile(ctx, p.ID); api.Code(err) != "in-use" {
 		t.Fatalf("remove in use: %v", err)
+	}
+}
+
+func TestActionStatusCarriesProfileID(t *testing.T) {
+	e := newEnv(t, storage.NewMemory())
+	act, _, _ := e.newAction(t, 1)
+	profs, err := e.m.Profiles(ctx)
+	if err != nil || len(profs) != 1 {
+		t.Fatalf("profiles = %v, %v", profs, err)
+	}
+	pid := profs[0].ID
+	all, err := e.m.Actions(ctx)
+	if err != nil || len(all) != 1 || all[0].ProfileID != pid {
+		t.Fatalf("Actions = %+v, %v", all, err)
+	}
+	one, err := e.m.Action(ctx, act.ID)
+	if err != nil || one.ProfileID != pid {
+		t.Fatalf("Action = %+v, %v", one, err)
+	}
+	b, err := json.Marshal(one)
+	if err != nil || !strings.Contains(string(b), `"profileId":"`+pid+`"`) {
+		t.Fatalf("json = %s, %v", b, err)
 	}
 }
