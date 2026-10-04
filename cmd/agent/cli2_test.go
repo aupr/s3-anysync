@@ -206,6 +206,18 @@ func TestCLISettingsAndAutostartUnsupported(t *testing.T) {
 	}
 }
 
+func TestCLIAutostartExplainsDevDataFolder(t *testing.T) {
+	t.Setenv("S3_ANYSYNC_DATA_DIR", t.TempDir())
+	m := opener(t, storage.NewMemory())
+	const msg = "autostart is disabled while S3_ANYSYNC_DATA_DIR is set (development data folder)"
+	if out := runOK(t, m, "autostart", "status"); !strings.Contains(out, msg) {
+		t.Fatalf("autostart status:\n%s", out)
+	}
+	if out := runFail(t, m, "autostart", "enable"); !strings.Contains(out, msg) {
+		t.Fatalf("autostart enable:\n%s", out)
+	}
+}
+
 // TestCLIThroughTheAgentOverIPC plays the agent: it holds the data-folder lock
 // and serves a Manager over IPC. The CLI side goes through connectTo itself, so
 // the ErrBusy -> ipc.Connect branch is what is exercised.

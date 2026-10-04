@@ -182,6 +182,6 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 - The Windows pieces (named pipe with its owner check, tray, HKCU Run autostart) are cross-compiled but UNTESTED on Windows; the pipe-owner check in particular has never run there.
 - The tray, desktop notifications and autostart have not been checked by hand on a real desktop yet (pending).
 - The GUI is not covered by automated end-to-end tests (only Go and frontend unit tests); the hand-check of the GUI is performed as part of the release checklist and is not automated.
-- The Settings autostart switch always changes the real per-user login item, even when the GUI runs against a development data folder.
+- Whenever `S3_ANYSYNC_DATA_DIR` is set, the Settings autostart switch is hidden and autostart is refused (CLI and GUI), so a development data folder never touches the real per-user login item.
 - Resolving a conflict sends only your choices, not the conflict contents you reviewed. If the same path is saved again with new content between viewing and Apply, your choice would apply to content you did not see. The GUI clears its choices after a `conflict` outcome, but a sync from another window or the CLI can still race.
 - If removing an action's passphrase fails after you leave the action, a stale worker can stay in the agent until it restarts.

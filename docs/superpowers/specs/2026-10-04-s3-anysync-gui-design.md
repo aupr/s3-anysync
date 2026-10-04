@@ -75,7 +75,7 @@ Layout: left sidebar (Actions, Profiles, Activity, Settings); header with machin
 4. **Conflicts:** list with local/cloud size, mtime, hash; side-by-side text diff from `ConflictDetail` (binary or truncated → metadata only); per-file Keep local / Keep cloud; Apply disabled until every conflict has a choice; bulk "all local"/"all cloud" warn and list the files a bulk choice would delete, since resolution deletions are exempt from the delete guard.
 5. **Delete review:** pending paths; Approve sends exactly that list; if the result is still `deletes-pending`, reload the list and say nothing was approved.
 6. **Activity:** live feed of `action.result` and `action.state` events, filter by action, "Open log folder".
-7. **Settings:** machine name, autostart (hidden when unsupported), log level.
+7. **Settings:** machine name, autostart (hidden when unsupported, including whenever `S3_ANYSYNC_DATA_DIR` is set), log level.
 
 Unsaved forms (Rules, Profile) ask "Discard changes?" before navigating away.
 

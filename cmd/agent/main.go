@@ -41,7 +41,13 @@ func connectDefault(ctx context.Context) (api.Service, func(), error) {
 }
 
 // defaultAutostart registers this executable with "run"; nil if unsupported.
+// It is also nil whenever S3_ANYSYNC_DATA_DIR is set: the login item is per
+// user and starts the default data folder, so a development data folder must
+// never touch it.
 func defaultAutostart() agent.Autostart {
+	if os.Getenv("S3_ANYSYNC_DATA_DIR") != "" {
+		return nil
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil

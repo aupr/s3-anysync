@@ -266,15 +266,24 @@ func (c *cli) autostart(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	const devMsg = "autostart is disabled while S3_ANYSYNC_DATA_DIR is set (development data folder)"
+	devDir := !s.AutostartSupported && os.Getenv("S3_ANYSYNC_DATA_DIR") != ""
 	switch args[0] {
 	case "status":
 	case "enable", "disable":
+		if devDir {
+			return errors.New(devMsg)
+		}
 		s.Autostart = args[0] == "enable"
 		if s, err = c.svc.UpdateSettings(ctx, s); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("autostart: unknown subcommand %q", args[0])
+	}
+	if devDir {
+		fmt.Fprintln(c.out, devMsg)
+		return nil
 	}
 	if !s.AutostartSupported {
 		fmt.Fprintln(c.out, "autostart: not supported on this system")
