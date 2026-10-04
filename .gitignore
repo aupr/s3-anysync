@@ -10,3 +10,4 @@
 .superpowers/
 /frontend/package.json.md5
 /cmd/agent/*.syso
+/dist/
