@@ -201,4 +201,4 @@ Contributions are welcome. Bug reports, fixes, docs and features all help; see [
 
 ## License
 
-[MIT](LICENSE) © 2026 Aman Ullah
+[MIT](LICENSE) © 2026 @aupr
