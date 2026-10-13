@@ -194,3 +194,11 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 - The GUI is not covered by automated end-to-end tests (only Go and frontend unit tests); the hand-check of the GUI is performed as part of the release checklist and is not automated.
 - Whenever `S3_ANYSYNC_DATA_DIR` is set, the Settings autostart switch is hidden and autostart is refused (CLI and GUI), so a development data folder never touches the real per-user login item.
 - If removing an action's passphrase fails after you leave the action, a stale worker can stay in the agent until it restarts.
+
+## Contributing
+
+Contributions are welcome. Bug reports, fixes, docs and features all help; see [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
+## License
+
+[MIT](LICENSE) © 2026 Aman Ullah
