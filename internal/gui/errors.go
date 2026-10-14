@@ -9,7 +9,7 @@ import (
 	"net"
 	"net/url"
 
-	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/api"
 )
 
 // ErrUnreachable: there is no connection to the agent.

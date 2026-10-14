@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/logging"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/logging"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 func (m *Manager) Status(ctx context.Context) (api.Status, error) {

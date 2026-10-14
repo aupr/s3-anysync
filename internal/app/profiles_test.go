@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/secrets"
-	"github.com/niceit/s3-anysync/internal/state"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/state"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 func TestUpdateProfile(t *testing.T) {

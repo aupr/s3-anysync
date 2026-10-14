@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/storage"
-	"github.com/niceit/s3-anysync/internal/storage/s3test"
+	"github.com/aupr/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/storage/s3test"
 )
 
 func TestScenariosS3(t *testing.T) {

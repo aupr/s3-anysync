@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 // clock is a settable test clock.

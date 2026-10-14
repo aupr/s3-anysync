@@ -3,7 +3,7 @@ package engine
 import (
 	"sort"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // OpKind is what the executor does with one path.

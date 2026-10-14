@@ -3,7 +3,7 @@ package state
 import (
 	"encoding/json"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // SaveConflicts replaces the action's open conflicts; nil clears them.

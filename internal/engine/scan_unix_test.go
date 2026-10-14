@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 func TestScanFIFO(t *testing.T) {

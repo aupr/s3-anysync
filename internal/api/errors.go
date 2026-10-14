@@ -4,11 +4,11 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/datalock"
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/state"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/datalock"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/state"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 var (

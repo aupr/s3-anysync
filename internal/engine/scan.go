@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // scanLocal lists every mapped, non-excluded local file keyed by remote path.

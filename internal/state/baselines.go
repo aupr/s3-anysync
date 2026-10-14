@@ -1,6 +1,6 @@
 package state
 
-import "github.com/niceit/s3-anysync/internal/model"
+import "github.com/aupr/s3-anysync/internal/model"
 
 // LoadBaseline returns the last committed state of an action on this
 // machine, keyed by remote path. A missing baseline is an empty map.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 func memFactory(s storage.Storage) storeFactory {

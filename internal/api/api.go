@@ -8,9 +8,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 // Service is everything a front end can ask of s3-anysync.

@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/agent"
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/ipc"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/secrets"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/agent"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/ipc"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 var ctx = context.Background()

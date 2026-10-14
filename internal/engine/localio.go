@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/paths"
+	"github.com/aupr/s3-anysync/internal/paths"
 )
 
 // resolveLink follows dst if it is a symlink (even a dangling one) and returns

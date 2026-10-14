@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/schedule"
-	"github.com/niceit/s3-anysync/internal/secrets"
-	"github.com/niceit/s3-anysync/internal/state"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/schedule"
+	"github.com/aupr/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/state"
 )
 
 const settingLogLevel = "log_level"

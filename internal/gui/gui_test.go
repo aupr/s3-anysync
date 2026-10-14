@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // fakeClient is an agent connection; only the methods below are used.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/api"
 )
 
 // Options configure the tray.

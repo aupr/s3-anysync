@@ -5,7 +5,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // localState is how a local path compares with what the plan saw at scan time.

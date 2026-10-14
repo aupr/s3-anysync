@@ -9,12 +9,12 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/paths"
-	"github.com/niceit/s3-anysync/internal/schedule"
-	"github.com/niceit/s3-anysync/internal/trigger"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/paths"
+	"github.com/aupr/s3-anysync/internal/schedule"
+	"github.com/aupr/s3-anysync/internal/trigger"
 )
 
 // stopTriggersHook is a test hook run at the start of every stopTriggers.

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 func as(state string, mod func(*api.ActionStatus)) api.ActionStatus {

@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/datalock"
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/state"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/datalock"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/state"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 func TestCodesRoundTrip(t *testing.T) {

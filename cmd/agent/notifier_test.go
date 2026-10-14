@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/notify"
+	"github.com/aupr/s3-anysync/internal/notify"
 )
 
 func TestPickNotifier(t *testing.T) {

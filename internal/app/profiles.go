@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/niceit/s3-anysync/internal/engine"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/engine"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/secrets"
 )
 
 // ErrInUse: the profile is used by actions on this machine.

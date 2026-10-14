@@ -17,14 +17,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/agent"
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/datalock"
-	"github.com/niceit/s3-anysync/internal/ipc"
-	"github.com/niceit/s3-anysync/internal/logging"
-	"github.com/niceit/s3-anysync/internal/notify"
-	"github.com/niceit/s3-anysync/internal/secrets"
-	"github.com/niceit/s3-anysync/internal/tray"
+	"github.com/aupr/s3-anysync/internal/agent"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/datalock"
+	"github.com/aupr/s3-anysync/internal/ipc"
+	"github.com/aupr/s3-anysync/internal/logging"
+	"github.com/aupr/s3-anysync/internal/notify"
+	"github.com/aupr/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/tray"
 )
 
 var errAgentRunning = errors.New("another agent or command holds the data folder")

@@ -16,7 +16,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/niceit/s3-anysync/internal/paths"
+	"github.com/aupr/s3-anysync/internal/paths"
 )
 
 // fileFDWatches: kqueue-style backends watch each file through its own

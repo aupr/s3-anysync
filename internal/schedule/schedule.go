@@ -13,7 +13,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // MaxEveryMinutes is the maximum allowed interval in minutes (one week).

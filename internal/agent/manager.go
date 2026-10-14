@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/notify"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/notify"
 )
 
 // Autostart turns starting the agent at login on or off.

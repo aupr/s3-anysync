@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 func TestCheckLocal(t *testing.T) {

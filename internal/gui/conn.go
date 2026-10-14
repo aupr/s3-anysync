@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/api"
 )
 
 // Client is one connection to the agent.

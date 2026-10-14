@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/schedule"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/schedule"
 )
 
 // parseSchedule parses none, every:MINUTES, daily:HH:MM,

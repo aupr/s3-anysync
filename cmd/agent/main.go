@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/niceit/s3-anysync/internal/agent"
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/autostart"
-	"github.com/niceit/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/agent"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/autostart"
+	"github.com/aupr/s3-anysync/internal/secrets"
 )
 
 // The tray (macOS, Windows) must run on the process's main thread.

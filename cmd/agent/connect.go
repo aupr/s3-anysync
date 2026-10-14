@@ -8,12 +8,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/agent"
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/datalock"
-	"github.com/niceit/s3-anysync/internal/ipc"
-	"github.com/niceit/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/agent"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/datalock"
+	"github.com/aupr/s3-anysync/internal/ipc"
+	"github.com/aupr/s3-anysync/internal/secrets"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // massDeletes returns the paths this run would delete (on either side) when

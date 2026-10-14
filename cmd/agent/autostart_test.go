@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/autostart"
+	"github.com/aupr/s3-anysync/internal/autostart"
 )
 
 func TestDefaultAutostartUnsupportedUnderDevDataFolder(t *testing.T) {

@@ -19,11 +19,11 @@ SetCompressor /SOLID lzma
 
 VIProductVersion "${VERSION4}"
 VIAddVersionKey "ProductName" "${APP}"
-VIAddVersionKey "CompanyName" "niceit"
+VIAddVersionKey "CompanyName" "aupr"
 VIAddVersionKey "FileDescription" "${APP} installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
-VIAddVersionKey "LegalCopyright" "niceit"
+VIAddVersionKey "LegalCopyright" "aupr"
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -60,7 +60,7 @@ Section "${APP} (required)" SecMain
   CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\s3-anysync.exe"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${APP}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "niceit"
+  WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "aupr"
   WriteRegStr HKCU "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\s3-anysync.exe"
   WriteRegStr HKCU "${UNINSTKEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'

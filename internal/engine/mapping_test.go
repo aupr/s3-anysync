@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 func identity(p string) (string, error) { return filepath.FromSlash(p), nil }

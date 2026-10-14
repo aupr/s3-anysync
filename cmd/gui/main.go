@@ -16,9 +16,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/gui"
-	"github.com/niceit/s3-anysync/internal/ipc"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/gui"
+	"github.com/aupr/s3-anysync/internal/ipc"
 )
 
 //go:embed all:dist

@@ -5,7 +5,7 @@ package tray
 import (
 	"context"
 
-	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/api"
 )
 
 // Available reports whether this build has a real tray.

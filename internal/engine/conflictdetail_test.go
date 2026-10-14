@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 func conflictedPair(t *testing.T, act model.Action, aPass, bPass, aContent, bContent string) (*harness, *machine, *machine) {

@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/paths"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/paths"
 )
 
 // Mapping ties one item to its local path on this machine.

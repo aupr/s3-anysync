@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/api"
 )
 
 // bus fans events out to subscribers. A subscriber that falls behind loses

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 // runContract checks behaviour every Storage implementation must share.

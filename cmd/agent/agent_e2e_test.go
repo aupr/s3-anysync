@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/api"
-	"github.com/niceit/s3-anysync/internal/app"
-	"github.com/niceit/s3-anysync/internal/datalock"
-	"github.com/niceit/s3-anysync/internal/ipc"
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/notify"
-	"github.com/niceit/s3-anysync/internal/secrets"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/api"
+	"github.com/aupr/s3-anysync/internal/app"
+	"github.com/aupr/s3-anysync/internal/datalock"
+	"github.com/aupr/s3-anysync/internal/ipc"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/notify"
+	"github.com/aupr/s3-anysync/internal/secrets"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 func waitUntil(t *testing.T, what string, cond func() bool) {

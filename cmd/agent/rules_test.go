@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 func TestParseSchedule(t *testing.T) {

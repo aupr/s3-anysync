@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/storage"
-	"github.com/niceit/s3-anysync/internal/storage/s3test"
+	"github.com/aupr/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/storage/s3test"
 )
 
 func TestS3Contract(t *testing.T) {

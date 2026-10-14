@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // Runner performs syncs, snapshots, resolution and restores for one action

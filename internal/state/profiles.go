@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // PutProfile inserts or replaces a profile.

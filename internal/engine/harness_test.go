@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/paths"
-	"github.com/niceit/s3-anysync/internal/state"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/paths"
+	"github.com/aupr/s3-anysync/internal/state"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 // storeFactory returns a shared bucket and a root prefix for one scenario.

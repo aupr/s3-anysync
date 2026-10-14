@@ -8,8 +8,8 @@ import (
 	"os"
 	"unicode/utf8"
 
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 // MaxDiffBytes is the largest side ConflictDetail returns as text.

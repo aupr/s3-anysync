@@ -3,7 +3,7 @@ package state
 import (
 	"time"
 
-	"github.com/niceit/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/model"
 )
 
 // AddHistory appends a run to the action's history.

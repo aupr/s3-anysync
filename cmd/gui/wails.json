@@ -7,12 +7,12 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
-  "author": { "name": "niceit" },
+  "author": { "name": "aupr" },
   "info": {
-    "companyName": "niceit",
+    "companyName": "aupr",
     "productName": "s3-anysync",
     "productVersion": "0.0.0",
-    "copyright": "niceit",
+    "copyright": "aupr",
     "comments": "Sync application settings through S3"
   }
 }

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/model"
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/model"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 // hookStore lets a test run code at chosen storage calls.

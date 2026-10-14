@@ -10,7 +10,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/niceit/s3-anysync/internal/storage"
+	"github.com/aupr/s3-anysync/internal/storage"
 )
 
 // New returns a store and a unique key prefix, or skips the test when no
