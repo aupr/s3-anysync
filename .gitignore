@@ -11,3 +11,53 @@
 /frontend/package.json.md5
 /cmd/agent/*.syso
 /dist/
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+*.exe
+*.exe~
+*.test
+*.out
+coverage.txt
+coverage.html
+go.work
+go.work.sum
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+secrets.json
+*.pem
+*.key
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+
+# Wails generated files
+/cmd/gui/build/darwin/Info.dev.plist
