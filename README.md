@@ -1,20 +1,75 @@
 # s3-anysync
 
-Keep application settings files and config folders in sync across macOS and Windows machines through your own S3-compatible bucket (AWS S3, Wasabi, Backblaze B2, Cloudflare R2, MinIO, ...).
+**Keep your app settings and config folders in sync across all your computers, using your own S3 bucket.**
 
-Design: [docs/superpowers/specs/2026-10-01-s3-anysync-design.md](docs/superpowers/specs/2026-10-01-s3-anysync-design.md)
+You pick the files or folders you care about (editor settings, dotfiles, shell config, app preferences). s3-anysync keeps them identical on every machine through a bucket you own: AWS S3, Wasabi, Backblaze B2, Cloudflare R2, MinIO, or any other S3-compatible service. There is no account and no server run by anyone else.
+
+## What it does
+
+- **Two-way or one-way sync.** Each machine chooses its own direction per set of files.
+- **Your bucket, your keys.** The secret key is stored in the system keychain, never in the bucket, logs or database.
+- **Optional end-to-end encryption.** File contents can be encrypted with AES-256-GCM before they leave your computer.
+- **Safe by default.** Conflicts pause the sync and ask you. A delete guard stops mass deletions. Snapshots let you go back to an earlier state.
+- **Runs in the background.** Syncs on file changes, on a schedule, or both. Tray icon and desktop notifications included.
+- **Window or command line.** A desktop app for everyday use, and a CLI for scripts and servers.
 
 ## Status
 
-Implemented: the sync engine, the command line, the background agent (triggers, tray, notifications, IPC, autostart), the desktop GUI and the packaging scripts (macOS app in a DMG and ZIP, Windows installer). The Windows installer, the IPC pipe-owner check and the tray, notification and start-at-login behavior have not been run on real hardware yet (see the checklist in [docs/RELEASE.md](docs/RELEASE.md)). See [docs/INSTALL.md](docs/INSTALL.md) and [docs/RELEASE.md](docs/RELEASE.md).
+The sync engine, the command line, the background agent and the desktop app are implemented. macOS is the main tested platform. The Windows installer, tray and start-at-login have been cross-compiled but **not yet tested on real Windows hardware**. Linux can be built from source (command line and headless agent) and is **untested**. See [Known limitations](#known-limitations).
 
 ## Install
 
-macOS 13 or newer (universal app) and Windows (amd64, per-user installer). The builds are unsigned, so Gatekeeper and SmartScreen warn on first launch. Steps, the command-line setup, upgrading and checksum verification: [docs/INSTALL.md](docs/INSTALL.md).
+| Platform | How | Notes |
+|---|---|---|
+| **macOS** 13+ (Apple Silicon and Intel) | Download the `.dmg` from the [Releases page](https://github.com/aupr/s3-anysync/releases), drag the app to Applications | Not notarized: on first launch use right-click, Open (see below) |
+| **Windows** 10/11 (64-bit) | Download and run the `-installer.exe` from [Releases](https://github.com/aupr/s3-anysync/releases) | Per-user, no admin rights. SmartScreen warns on first run: More info, Run anyway |
+| **Linux** | Build from source (below) | Command line and headless agent only; no desktop window or tray yet |
 
-## Releasing
+Full steps, the command-line setup, upgrading, uninstalling and checksum verification are in [docs/INSTALL.md](docs/INSTALL.md).
 
-Maintainers build the release artifacts with `scripts/release.sh` on a Mac and follow the release flow in [docs/RELEASE.md](docs/RELEASE.md): tag locally, build, check those artifacts, then push the tag and publish.
+### macOS
+
+1. Open the `.dmg` and drag `s3-anysync.app` to Applications.
+2. The first launch is blocked by Gatekeeper because the app is not signed with an Apple Developer ID. Open it with right-click, Open (macOS 13-14), or go to System Settings, Privacy & Security, Open Anyway (macOS 15+). Or run:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/s3-anysync.app
+   ```
+3. The window starts the background agent and a tray icon appears in the menu bar.
+
+### Windows
+
+1. Run the installer. If SmartScreen warns, click More info, then Run anyway.
+2. Start s3-anysync from the Start menu. The window needs the Edge WebView2 runtime, which current Windows 10/11 already include.
+3. Optional: tick "Add the command-line tool to PATH" in the installer to use `s3-anysync-cli` in a terminal.
+
+### Linux (from source)
+
+Needs Go 1.27 and git. The agent is also the command-line tool.
+
+```bash
+git clone https://github.com/aupr/s3-anysync.git
+cd s3-anysync
+CGO_ENABLED=0 go build -o s3-anysync ./cmd/agent
+sudo install s3-anysync /usr/local/bin/
+s3-anysync status
+```
+
+Things to know on Linux:
+
+- There is no desktop window, tray icon or start-at-login yet. Run the agent yourself: `s3-anysync run --no-tray --no-notify` (for example from a systemd user service).
+- Secrets use the system keychain through the Secret Service (GNOME Keyring, KWallet). On a server without one, set `S3_ANYSYNC_SECRETS=file` to keep secrets in a protected file (development use only; see [Development](#development)).
+- Linux support has not been tested. Bug reports and fixes are very welcome.
+
+## Quick start
+
+With the desktop app:
+
+1. Open **Profiles** and add your bucket (endpoint, bucket name, access key and secret key), then use Test.
+2. Open **Actions**, create an action, and add the files or folders to sync.
+3. On your other computer, install the app, add the same profile, and **Join** the action.
+4. Choose how each machine syncs (two-way, local to cloud, or cloud to local) and set triggers in the Rules tab.
+
+With the command line, see [Try it with two "machines" on one computer](#try-it-with-two-machines-on-one-computer) below for a complete walk-through you can run against a local MinIO.
 
 ## Concepts
 
@@ -197,7 +252,12 @@ The access key needs `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutOb
 
 ## Contributing
 
-Contributions are welcome. Bug reports, fixes, docs and features all help; see [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+Contributions of all sizes are welcome: bug reports, fixes, documentation, testing on Windows and Linux, and new features.
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
+- Good first steps: try the app on Windows or Linux and report what breaks, or pick something from [Known limitations](#known-limitations).
+- Found a bug or have an idea? [Open an issue](https://github.com/aupr/s3-anysync/issues).
+- To change code: fork, create a branch, run `go test ./...` (and `cd frontend && npm test` if you touch the GUI), then open a pull request.
 
 ## License
 
